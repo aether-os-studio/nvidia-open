@@ -29,8 +29,8 @@
 
 NvU32 osNv_rdcr4(void)
 {
-    NvU64 val;
-    asm volatile ("movq %%cr4,%0" : "=r" (val));
+    NvU64 val = 0;
+    asm volatile("movq %%cr4,%0" : "=r"(val));
     return (NvU32)val;
 }
 
