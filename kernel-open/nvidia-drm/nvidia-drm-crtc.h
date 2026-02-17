@@ -25,7 +25,7 @@
 
 #include "nvidia-drm-conftest.h"
 
-#if defined(NV_DRM_ATOMIC_MODESET_AVAILABLE)
+#if defined(NV_DRM_AVAILABLE)
 
 #include "nvidia-drm-helper.h"
 
@@ -191,13 +191,6 @@ struct nv_drm_plane {
      */
     uint32_t layer_idx;
 
-    /**
-     * @supportsColorProperties
-     *
-     * If true, supports the COLOR_ENCODING and COLOR_RANGE properties.
-     */
-    bool supportsColorProperties;
-
     struct NvKmsLUTCaps ilut_caps;
     struct NvKmsLUTCaps tmo_caps;
 };
@@ -349,6 +342,6 @@ int nv_drm_get_crtc_crc32_ioctl(struct drm_device *dev,
 int nv_drm_get_crtc_crc32_v2_ioctl(struct drm_device *dev,
                                    void *data, struct drm_file *filep);
 
-#endif /* NV_DRM_ATOMIC_MODESET_AVAILABLE */
+#endif /* NV_DRM_AVAILABLE */
 
 #endif /* __NVIDIA_DRM_CRTC_H__ */

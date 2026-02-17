@@ -82,6 +82,8 @@ void uvm_hal_ampere_arch_init_properties(uvm_parent_gpu_t *parent_gpu)
 
     parent_gpu->non_replayable_faults_supported = true;
 
+    parent_gpu->access_counters_serialize_clear_ops_by_type = false;
+
     parent_gpu->fault_cancel_va_supported = true;
 
     parent_gpu->scoped_atomics_supported = true;
@@ -94,16 +96,22 @@ void uvm_hal_ampere_arch_init_properties(uvm_parent_gpu_t *parent_gpu)
 
     parent_gpu->sparse_mappings_supported = true;
 
+    parent_gpu->access_bits_supported = false;
+
     UVM_ASSERT(parent_gpu->rm_info.gpuArch == NV2080_CTRL_MC_ARCH_INFO_ARCHITECTURE_GA100);
     if (parent_gpu->rm_info.gpuImplementation == NV2080_CTRL_MC_ARCH_INFO_IMPLEMENTATION_GA100 ||
-        parent_gpu->rm_info.gpuImplementation == NV2080_CTRL_MC_ARCH_INFO_IMPLEMENTATION_GA000)
+        parent_gpu->rm_info.gpuImplementation == NV2080_CTRL_MC_ARCH_INFO_IMPLEMENTATION_GA000) {
         parent_gpu->map_remap_larger_page_promotion = true;
-    else
+    }
+    else {
         parent_gpu->map_remap_larger_page_promotion = false;
+    }
 
     parent_gpu->plc_supported = true;
 
-    parent_gpu->no_ats_range_required = false;
+    parent_gpu->ats.no_ats_range_required = false;
+
+    parent_gpu->ats.gmmu_pt_depth0_init_required = false;
 
     parent_gpu->conf_computing.per_channel_key_rotation = false;
 }

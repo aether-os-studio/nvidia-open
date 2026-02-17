@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2015-2024 NVidia Corporation
+    Copyright (c) 2015-2025 NVidia Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -26,7 +26,7 @@
 
 #include "uvm_types.h"
 #include "uvm_ioctl.h"
-#include "nv_uvm_types.h"
+#include "nv_uvm_user_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -943,7 +943,7 @@ typedef struct
 {
     NvProcessorUuid                 gpu_uuid;                                           // In
 
-    // Type UVM_ACCESS_COUNTER_GRANULARITY from nv_uvm_types.h
+    // Type UVM_ACCESS_COUNTER_GRANULARITY from nv_uvm_user_types.h
     NvU32                           granularity;                                        // In
 
     NvU32                           threshold;                                          // In
@@ -1009,26 +1009,26 @@ typedef struct
 } UVM_TEST_CHECK_CHANNEL_VA_SPACE_PARAMS;
 
 //
-// UvmTestEnableNvlinkPeerAccess
+// UvmTestEnableStaticPeerAccess
 //
-#define UVM_TEST_ENABLE_NVLINK_PEER_ACCESS               UVM_TEST_IOCTL_BASE(60)
+#define UVM_TEST_ENABLE_STATIC_PEER_ACCESS               UVM_TEST_IOCTL_BASE(60)
 typedef struct
 {
     NvProcessorUuid gpuUuidA; // IN
     NvProcessorUuid gpuUuidB; // IN
     NV_STATUS  rmStatus; // OUT
-} UVM_TEST_ENABLE_NVLINK_PEER_ACCESS_PARAMS;
+} UVM_TEST_ENABLE_STATIC_PEER_ACCESS_PARAMS;
 
 //
-// UvmTestDisableNvlinkPeerAccess
+// UvmTestDisableStaticPeerAccess
 //
-#define UVM_TEST_DISABLE_NVLINK_PEER_ACCESS              UVM_TEST_IOCTL_BASE(61)
+#define UVM_TEST_DISABLE_STATIC_PEER_ACCESS              UVM_TEST_IOCTL_BASE(61)
 typedef struct
 {
     NvProcessorUuid gpuUuidA; // IN
     NvProcessorUuid gpuUuidB; // IN
     NV_STATUS  rmStatus; // OUT
-} UVM_TEST_DISABLE_NVLINK_PEER_ACCESS_PARAMS;
+} UVM_TEST_DISABLE_STATIC_PEER_ACCESS_PARAMS;
 
 typedef enum
 {
@@ -1057,24 +1057,6 @@ typedef struct
     NvU64                           pin_ns                           NV_ALIGN_BYTES(8); // In
     NV_STATUS                       rmStatus;                                           // Out
 } UVM_TEST_SET_PAGE_THRASHING_POLICY_PARAMS;
-
-#define UVM_TEST_PMM_SYSMEM                              UVM_TEST_IOCTL_BASE(64)
-typedef struct
-{
-    NvU64                           range_address1                   NV_ALIGN_BYTES(8); // In
-    NvU64                           range_address2                   NV_ALIGN_BYTES(8); // In
-    NV_STATUS                       rmStatus;                                           // Out
-} UVM_TEST_PMM_SYSMEM_PARAMS;
-
-#define UVM_TEST_PMM_REVERSE_MAP                         UVM_TEST_IOCTL_BASE(65)
-typedef struct
-{
-    NvProcessorUuid                 gpu_uuid;                                           // In
-    NvU64                           range_address1                   NV_ALIGN_BYTES(8); // In
-    NvU64                           range_address2                   NV_ALIGN_BYTES(8); // In
-    NvU64                           range_size2                      NV_ALIGN_BYTES(8); // In
-    NV_STATUS                       rmStatus;                                           // Out
-} UVM_TEST_PMM_REVERSE_MAP_PARAMS;
 
 // Calls uvm_va_space_mm_retain on a VA space, operates on the mm, optionally
 // sleeps for a while, then releases the va_space_mm and returns. The idea is to
@@ -1297,8 +1279,7 @@ typedef enum
     UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_MMU_NOTIFIER,
 
     UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_HMM,
-    UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS_KERNEL,
-    UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS_DRIVER,
+    UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS,
     UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_COUNT
 } UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE;
 
@@ -1559,6 +1540,46 @@ typedef struct
 
     NV_STATUS rmStatus;                     // Out
 } UVM_TEST_QUERY_ACCESS_COUNTERS_PARAMS;
+
+#define UVM_TEST_VA_BLOCK_DISCARD_STATUS                 UVM_TEST_IOCTL_BASE(110)
+typedef struct
+{
+    NvU64 lookup_address    NV_ALIGN_BYTES(8);           // In
+    NvBool discarded;                                    // Out
+    NV_STATUS rmStatus;                                  // Out
+} UVM_TEST_VA_BLOCK_DISCARD_STATUS_PARAMS;
+
+// Keep this in sync with uvm_pmm_alloc_list_t in uvm_pmm_gpu.h
+typedef enum
+{
+    UVM_TEST_PMM_ALLOC_LIST_UNUSED = 0,
+    UVM_TEST_PMM_ALLOC_LIST_DISCARDED,
+    UVM_TEST_PMM_ALLOC_LIST_USED,
+    UVM_TEST_PMM_ALLOC_LIST_COUNT
+} UVM_TEST_PMM_ALLOC_LIST_TYPE;
+
+#define UVM_TEST_PMM_GET_ALLOC_LIST                      UVM_TEST_IOCTL_BASE(111)
+typedef struct
+{
+    NvU64 address   NV_ALIGN_BYTES(8);                   // In
+    NvProcessorUuid gpu_uuid;                            // In
+    NvU32 list_type;                                     // Out (UVM_TEST_PMM_ALLOC_LIST_TYPE)
+
+    // NV_ERR_INVALID_STATE if there is no chunk, or if the chunk is not on any
+    // of the allocated lists.
+    NV_STATUS rmStatus;                                  // Out
+} UVM_TEST_PMM_GET_ALLOC_LIST_PARAMS;
+
+#define UVM_TEST_DUMP_ACCESS_BITS                        UVM_TEST_IOCTL_BASE(112)
+typedef struct
+{
+    NvProcessorUuid gpu_uuid;                            // In
+    NvU64 mode;                                          // In 
+    NvU64 granularity_size_kb;                           // Out
+    NvU64* current_bits;                                 // Out
+    NvU64 current_bits_length;                           // Out
+    NV_STATUS rmStatus;                                  // Out
+} UVM_TEST_DUMP_ACCESS_BITS_PARAMS;
 
 #ifdef __cplusplus
 }

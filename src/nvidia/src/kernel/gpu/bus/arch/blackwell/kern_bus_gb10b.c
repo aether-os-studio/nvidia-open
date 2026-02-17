@@ -24,7 +24,9 @@
 #include "gpu/gpu.h"
 #include "gpu/bus/kern_bus.h"
 
+#include "published/hopper/gh100/hwproject.h"
 #include "published/blackwell/gb10b/pri_nv_xal_ep.h"
+#include "published/hopper/gh100/dev_nv_xal_ep_zb.h"
 
 /*!
  * @brief Writes NV_XAL_EP_BAR0_WINDOW_BASE
@@ -107,4 +109,35 @@ kbusFlush_GB10B
     // the kbusFlushSingle implementation do a sysmembar flush.
     //
     return kbusFlushSingle_HAL(pGpu, pKernelBus, ApertureFlags | BUS_FLUSH_VIDEO_MEMORY);
+}
+
+NV_STATUS
+kbusConstructXalApertures_GB10B
+(
+    OBJGPU *pGpu,
+    KernelBus *pKernelBus
+)
+{
+    NvU32 apertureIdx = 0;
+    // XAL_P2P is not supported on TEGRA chips
+    pKernelBus->xalApertureCount = XAL_BASE_TYPE_COUNT - 1;
+    pKernelBus->xalApertures = portMemAllocNonPaged(pKernelBus->xalApertureCount * sizeof(*pKernelBus->xalApertures));
+    NV_CHECK_OR_RETURN(LEVEL_ERROR, pKernelBus->xalApertures != NULL, NV_ERR_NO_MEMORY);
+    portMemSet(pKernelBus->xalApertures, 0, pKernelBus->xalApertureCount * sizeof(*pKernelBus->xalApertures));
+
+    ioaprtInit(&(pKernelBus->xalApertures[apertureIdx]), pGpu->pIOApertures[DEVICE_INDEX_GPU],
+                 NV_XAL_BASE_ADDRESS, DRF_SIZE(NV_XAL_EP_ZB));
+    return NV_OK;
+}
+
+IoAperture*
+kbusGetXalAperture_GB10B
+(
+    OBJGPU *pGpu,
+    KernelBus *pKernelBus,
+    XAL_BASE_TYPE baseType
+)
+{
+    NV_ASSERT_OR_RETURN(baseType == XAL_BASE, NULL);
+    return &(pKernelBus->xalApertures[baseType]);
 }

@@ -524,6 +524,7 @@ kceGetMappings_GA100
         // So, we need to check if the FBHUB PCEs have already been assigned.
         //
         pceIndex = CE_GET_LOWEST_AVAILABLE_IDX(fbPceMask);
+        NV_ASSERT_OR_ELSE(pceIndex < NV2080_CTRL_MAX_PCES, break);
         fbPceMask &= (~(NVBIT32(pceIndex)));
 
         if ((NVBIT32(pLocalPceLceMap[pceIndex])) & *pExposeCeMask)

@@ -159,7 +159,9 @@ NV_STATUS __nvoc_objCreate_IntrService(IntrService**, Dynamic*, NvU32);
     __nvoc_objCreate_IntrService((ppNewObj), staticCast((pParent), Dynamic), (createFlags))
 
 
-// Wrapper macros
+// Wrapper macros for implementation functions
+
+// Wrapper macros for halified functions
 #define intrservRegisterIntrService_FNPTR(pIntrService) pIntrService->__nvoc_metadata_ptr->vtable.__intrservRegisterIntrService__
 #define intrservRegisterIntrService(pGpu, pIntrService, pRecords) intrservRegisterIntrService_DISPATCH(pGpu, pIntrService, pRecords)
 #define intrservClearInterrupt_FNPTR(pIntrService) pIntrService->__nvoc_metadata_ptr->vtable.__intrservClearInterrupt__
@@ -170,7 +172,7 @@ NV_STATUS __nvoc_objCreate_IntrService(IntrService**, Dynamic*, NvU32);
 #define intrservServiceNotificationInterrupt(pGpu, pIntrService, pParams) intrservServiceNotificationInterrupt_DISPATCH(pGpu, pIntrService, pParams)
 
 // Dispatch functions
-static inline void intrservRegisterIntrService_DISPATCH(struct OBJGPU *pGpu, struct IntrService *pIntrService, IntrServiceRecord pRecords[179]) {
+static inline void intrservRegisterIntrService_DISPATCH(struct OBJGPU *pGpu, struct IntrService *pIntrService, IntrServiceRecord pRecords[180]) {
     pIntrService->__nvoc_metadata_ptr->vtable.__intrservRegisterIntrService__(pGpu, pIntrService, pRecords);
 }
 
@@ -186,7 +188,7 @@ static inline NV_STATUS intrservServiceNotificationInterrupt_DISPATCH(struct OBJ
     return pIntrService->__nvoc_metadata_ptr->vtable.__intrservServiceNotificationInterrupt__(pGpu, pIntrService, pParams);
 }
 
-void intrservRegisterIntrService_IMPL(struct OBJGPU *pGpu, struct IntrService *pIntrService, IntrServiceRecord pRecords[179]);
+void intrservRegisterIntrService_IMPL(struct OBJGPU *pGpu, struct IntrService *pIntrService, IntrServiceRecord pRecords[180]);
 
 NvBool intrservClearInterrupt_IMPL(struct OBJGPU *pGpu, struct IntrService *pIntrService, IntrServiceClearInterruptArguments *pParams);
 

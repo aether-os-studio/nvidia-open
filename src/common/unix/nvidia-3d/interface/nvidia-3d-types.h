@@ -338,9 +338,6 @@ typedef struct _Nv3dVertexAttributeStreamRec {
 typedef struct _Nv3dHal Nv3dHal;
 
 typedef struct _Nv3dDeviceCapsRec {
-    NvU32 hasSetBindlessTexture :1; /* Supports SetBindlessTexture method */
-    NvU32 hasProgramRegion   :1;
-
     NvU32 maxDim;                /*
                                   * Maximum width or height of the
                                   * texture surface in pixels.

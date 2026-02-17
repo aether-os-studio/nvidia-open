@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2012-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2012-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,6 +26,7 @@
 #include "virtualization/hypervisor/hypervisor.h"
 
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
+#include "nvdevid.h"
 
 #if PORT_MEM_TRACK_USE_LIMIT
 ct_assert(PORT_MEM_LIMIT_MAX_GFID == VGPU_MAX_GFID);
@@ -194,6 +195,7 @@ vgpuMgrReserveSystemChannelIDs
         NvU32       runlistId;
         CHID_MGR   *pChidMgr;
         NvU32       currentNumChannels = numChannels;
+        NvU32       hostChannelCount;
 
         if (engineFifoList[i].engineData[ENGINE_INFO_TYPE_RM_ENGINE_TYPE] ==
             RM_ENGINE_TYPE_SW)
@@ -213,19 +215,39 @@ vgpuMgrReserveSystemChannelIDs
                                                     &runlistId));
         pChidMgr = kfifoGetChidMgr(pGpu, pKernelFifo, runlistId);
 
+        hostChannelCount = kfifoChidMgrGetNumChannels(pGpu, pKernelFifo, pChidMgr);
         //
-        // numChannels received as input argument is prevPow2(maxPhysicalChannels/vgpuTypeInfo->maxInstance)
-        // So, if vgpuTypeInfo->maxInstance is not pow2, then numChannels is already reduced.
+        // On hyperv host, KMD/OS uses a CE channel for some paging oprations.
+        // For Blackwell+, since we don't have powerOf2 restriction we will calculate channel count
+        // using reserved ce channel and available host channel count
+
+        // For prev, GPUs,  we need to reduce the number of channels for guest to prev
+        // power of 2 and then reserve the channels. This applies to MIG vGPU
+        // profiles as well.
+        // Now numChannels received as input argument is prevPow2(maxPhysicalChannels/vgpuTypeInfo->maxInstance)
+        // If vgpuTypeInfo->maxInstance is not pow2, then numChannels is already reduced.
+		// Hence only reduce the number of channels by half when vgpuTypeInfo->maxInstance
+		// is pow2 or MIG is enabled
+		//
         if (hypervisorIsType(OS_HYPERVISOR_HYPERV) &&
-            (RM_ENGINE_TYPE_IS_COPY(engineFifoList[i].engineData[ENGINE_INFO_TYPE_RM_ENGINE_TYPE])) &&
-            ONEBITSET(vgpuTypeInfo->maxInstance))
+            (RM_ENGINE_TYPE_IS_COPY(engineFifoList[i].engineData[ENGINE_INFO_TYPE_RM_ENGINE_TYPE])))
         {
-            //
-            // On hyperv host, KMD/OS uses a CE channel for some paging oprations.
-            // so, we need to reduce the number of channels for guest to prev
-            // power of 2 and then reserve the channels.
-            //
-            currentNumChannels /= 2;
+            if (gpuIsNonPowerOf2ChannelCountSupported(pGpu))
+            {
+                if (IS_MIG_ENABLED(pGpu))
+                {
+                    currentNumChannels = (hostChannelCount - HYPERV_RESERVED_CE_CHANNELS_KMD) / vgpuTypeInfo->maxInstancePerGI;
+                }
+                else
+                {
+                    currentNumChannels = (hostChannelCount - HYPERV_RESERVED_CE_CHANNELS_KMD) / vgpuTypeInfo->maxInstance;
+                }
+            }
+
+            else if (ONEBITSET(vgpuTypeInfo->maxInstance) || IS_MIG_ENABLED(pGpu))
+            {
+                currentNumChannels /= 2;
+            }
         }
 
         //
@@ -329,7 +351,7 @@ NvU32 vgpuMgrGetSwrlCountToAllocate(OBJGPU *pGpu)
 {
     NvU32 num_swrl;
 
-    if (IS_MIG_IN_USE(pGpu))
+    if (IS_MIG_ENABLED(pGpu))
     {
         if (IsGB20XorBetter(pGpu))
         {
@@ -346,4 +368,11 @@ NvU32 vgpuMgrGetSwrlCountToAllocate(OBJGPU *pGpu)
     }
 
     return num_swrl;
+}
+
+NvU16 vgpuMgrGetVgpuSsvid(OBJGPU *pGpu)
+{
+    NvU16 vgpuSsvid = NV_PCI_SUBID_VENDOR_NVIDIA;
+
+    return vgpuSsvid;
 }

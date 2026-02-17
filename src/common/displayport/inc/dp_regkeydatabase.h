@@ -47,7 +47,7 @@
 #define NV_DP_REGKEY_APPLY_MAX_LINK_RATE_OVERRIDES    "APPLY_OVERRIDES_FOR_BUG_2489143"
 #define NV_DP_REGKEY_DISABLE_DSC                      "DISABLE_DSC"
 #define NV_DP_REGKEY_SKIP_ASSESSLINK_FOR_EDP          "HP_WAR_2189772"
-#define NV_DP_REGKEY_HDCP_AUTH_ONLY_ON_DEMAND         "DP_HDCP_AUTH_ONLY_ON_DEMAND"
+#define NV_DP_REGKEY_MST_AUTO_HDCP_AUTH_AT_ATTACH     "DP_MST_AUTO_HDCP_AUTH_AT_ATTACH"
 #define NV_DP_REGKEY_ENABLE_MSA_OVER_MST              "ENABLE_MSA_OVER_MST"
 #define NV_DP_REGKEY_DISABLE_DOWNSPREAD               "DISABLE_DOWNSPREAD"
 
@@ -81,9 +81,11 @@
 
 #define NV_DP2X_IGNORE_CABLE_ID_CAPS                    "DP2X_IGNORE_CABLE_ID_CAPS"
 
-#define NV_DP2X_REGKEY_DISABLE_EFF_BPP_SST_8b10b        "DP2X_REGKEY_DISABLE_EFF_BPP_SST_8b10b"
-
 #define NV_DP2X_REGKEY_VCONN_SOURCE_UNKNOWN_WAR         "DP2X_VCONN_SOURCE_UNKNOWN_WAR"
+
+#define NV_DP2X_REGKEY_DISABLE_WATERMARK_CACHING        "DP2X_DISABLE_WATERMARK_CACHING"
+
+#define NV_DP2X_REGKEY_DISABLE_EFF_BPP_SST_8b10b        "DP2X_REGKEY_DISABLE_EFF_BPP_SST_8b10b"
 
 //
 // Bug 4388987 : This regkey will disable reading PCON caps for MST.
@@ -91,7 +93,7 @@
 #define NV_DP_REGKEY_MST_PCON_CAPS_READ_DISABLED    "DP_BUG_4388987_WAR"
 #define NV_DP_REGKEY_DISABLE_TUNNEL_BW_ALLOCATION   "DP_DISABLE_TUNNEL_BW_ALLOCATION"
 
-#define NV_DP_REGKEY_DISABLE_AVOID_HBR3_WAR            "DP_DISABLE_AVOID_HBR3_WAR"
+#define NV_DP_REGKEY_DISABLE_AVOID_HBR3_WAR         "DP_DISABLE_AVOID_HBR3_WAR"
 
 // Bug 4793112 : On eDP panel, do not cache source OUI if it reads zero
 #define NV_DP_REGKEY_SKIP_ZERO_OUI_CACHE            "DP_SKIP_ZERO_OUI_CACHE"
@@ -100,9 +102,21 @@
 // Bug 5088957 : Force head shutdown in DpLib
 #define NV_DP_REGKEY_FORCE_HEAD_SHUTDOWN            "DP_WAR_5088957"
 
-// Bug 5041041 : Enable Lower BPP check for DSC
-#define NV_DP_REGKEY_ENABLE_LOWER_BPP_CHECK_FOR_DSC "DP_ENABLE_LOWER_BPP_CHECK"
+// Use max DSC compression for MST topologies
+#define NV_DP_REGKEY_USE_MAX_DSC_COMPRESSION_MST   "DP_USE_MAX_DSC_COMPRESSION_MST"
 
+// This regkey forces devID to be exposed to vendors via DPCD 0x309 for DSC-enabled SKUs.
+#define NV_DP_REGKEY_EXPOSE_DSC_DEVID_WAR           "DP_DSC_DEVID_WAR"
+
+#define NV_DP_REGKEY_ENABLE_CQA_STATS_COLLECTION    "DP_ENABLE_CQA_STATS_COLLECTION"
+
+#define NV_DP_REGKEY_IGNORE_CAPS_AND_FORCE_HIGHEST_LC  "DP_IGNORE_CAPS_AND_FORCE_HIGHEST_LC_WAR"
+
+// This regkey ensures DP IMP takes DP tunnelling BW into account while calculating DSC BPP
+#define NV_DP_REGKEY_OPTIMIZE_DSC_BPP_FOR_TUNNELLING_BW            "OPTIMIZE_DSC_BPP_FOR_TUNNELLING_BW"
+
+// This regkey disables GR-3336 that disables minimizing link config if it is 128b/132b.
+#define NV_DP_REGKEY_ENABLE_128b132b_DSC_LNK_CFG_REDUCTION        "ENABLE_128b132b_DSC_LNK_CFG_REDUCTION"
 
 //
 // Data Base used to store all the regkey values.
@@ -127,7 +141,7 @@ struct DP_REGKEY_DATABASE
     NvU32 applyMaxLinkRateOverrides;
     bool  bDscDisabled;
     bool  bAssesslinkForEdpSkipped;
-    bool  bHdcpAuthOnlyOnDemand;
+    bool  bMstAutoHdcpAuthAtAttach;
     bool  bMsaOverMstEnabled;
     bool  bOptLinkKeptAlive;
     bool  bOptLinkKeptAliveMst;
@@ -138,6 +152,7 @@ struct DP_REGKEY_DATABASE
     NvU32 supportInternalUhbrOnFpga;
     bool  bIgnoreCableIdCaps;
     bool  bDisableEffBppSST8b10b;
+    bool  bDisableWatermarkCaching;
     bool  bMSTPCONCapsReadDisabled;
     bool  bForceDisableTunnelBwAllocation;
     bool  bDownspreadDisabled;
@@ -146,7 +161,12 @@ struct DP_REGKEY_DATABASE
     bool  bSkipZeroOuiCache;
     bool  bEnable5147205Fix;
     bool  bForceHeadShutdown;
-    bool  bEnableLowerBppCheckForDsc;
+    bool  bEnableDevId;
+    bool  bEnableCqaStatsCollection;
+    bool  bIgnoreCapsAndForceHighestLc;
+    bool  bOptimizeDscBppForTunnellingBw;
+    bool  bEnable128b132bDSCLnkCfgReduction;
+    bool  bUseMaxDSCCompressionMST;
 };
 
 extern struct DP_REGKEY_DATABASE dpRegkeyDatabase;

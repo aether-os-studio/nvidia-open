@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -106,6 +106,9 @@ struct NV_BITVECTOR
 
 #define MAKE_ANON_BITVECTOR(last_val)                       \
     IMPL_BITVECTOR( , last_val)
+
+#define NV_BITVECTOR_ARRAY_LENGTH(pBitVector)                \
+    (NV_ARRAY_ELEMENTS(pBitVector->qword))
 
 #define bitVectorSizeOf(pBitVector)                                         \
     bitVectorSizeOf_IMPL(&((pBitVector)->real),                             \
@@ -279,6 +282,94 @@ struct NV_BITVECTOR
         }                                                                   \
     }
 
+/*
+ * @brief NV_BITVECTOR_INLINE_PRINT prints out a nvbitvector up to
+ *        the first element
+ * @param[in] stmnt   should be the NV_PRINTF statement using
+ *                     NV_BITVECTOR_INLINE_FMTX_* defines for places holders
+ *                     for the string formatting
+ * @params[in] b      bitvector to be printed
+ * @params[in] l      length of bitvector in bits to print
+ *                    must be the same as the NV_BITVECTOR_INLINE_FMTX_* used
+*/
+#define NV_BITVECTOR_INLINE_FMTX "0x%llx"
+
+#define NV_BITVECTOR_INLINE_PRINTF_ARG(b) \
+	(b)->qword[0]
+
+#if defined(DEBUG) || defined(DEVELOP)
+/*!
+ * void bitvectorPrint(pBitvector)
+ * @brief Dump a human-readable formatted string representing bitvector contents.
+ * @param[in] pBitvector pointer to a NV_BITVECTOR
+ * @note  Defined as a macro such that the dumps are associated with the correct NVLOG module
+ */
+#define bitVectorPrint(pBitvector)                                         \
+{                                                                                           \
+    NvU32  rdr;                                                                             \
+    NvU32 *s;                                                                               \
+    NvU32  offset = 0;                                                                      \
+    NvU32  i;                                                                               \
+    NvU32  length;                                                                          \
+    NvU32  lengthInBytes =  NV_BITVECTOR_ARRAY_LENGTH(pBitvector) * sizeof(NvU64);          \
+    length = (lengthInBytes) / 4;                                                           \
+                                                                                            \
+    rdr = length % 4;                                                                       \
+    s = (NvU32 *)(pBitvector);                                                                          \
+                                                                                            \
+    NV_PRINTF(LEVEL_INFO, "--------------------------------------------------\n");          \
+                                                                                            \
+    NV_PRINTF(LEVEL_INFO, "             0x0       0x4       0x8       0xc\n");              \
+                                                                                            \
+    for (i = 0; i < (length / 4); i++)                                                      \
+    {                                                                                       \
+        NV_PRINTF(LEVEL_INFO, "%08x  %08x  %08x  %08x  %08x\n", offset,                     \
+                  MEM_RD32(s + 0),                                                          \
+                  MEM_RD32(s + 1),                                                          \
+                  MEM_RD32(s + 2),                                                          \
+                  MEM_RD32(s + 3));                                                         \
+                                                                                            \
+        s += 4;                                                                             \
+        offset += 16;                                                                       \
+                                                                                            \
+        if ((offset % 256) == 0)                                                            \
+        {                                                                                   \
+            NV_PRINTF(LEVEL_INFO, "--------------------------------------------------\n");  \
+        }                                                                                   \
+    }                                                                                       \
+                                                                                            \
+    switch (rdr)                                                                            \
+    {                                                                                       \
+        case 1:                                                                             \
+            NV_PRINTF(LEVEL_INFO, "%08x  %08x  ........  ........  ........\n", offset,     \
+                      MEM_RD32(s + 0));                                                     \
+            break;                                                                          \
+        case 2:                                                                             \
+            NV_PRINTF(LEVEL_INFO, "%08x  %08x  %08x  ........  ........\n", offset,         \
+                      MEM_RD32(s + 0),                                                      \
+                      MEM_RD32(s + 1));                                                     \
+            break;                                                                          \
+        case 3:                                                                             \
+            NV_PRINTF(LEVEL_INFO, "%08x  %08x  %08x  %08x  ........\n", offset,             \
+                      MEM_RD32(s + 0),                                                      \
+                      MEM_RD32(s + 1),                                                      \
+                      MEM_RD32(s + 2));                                                     \
+            break;                                                                          \
+        default:                                                                            \
+            break;                                                                          \
+    }                                                                                       \
+                                                                                            \
+    NV_PRINTF(LEVEL_INFO, "--------------------------------------------------\n");          \
+}                                                                                           \
+
+#else
+#define bitVectorPrint(pBitvector)
+#endif // defined(DEBUG)
+
+#define NV_BITVECTOR_PRINT(stmt, pBitvector) \
+	stmt; \
+	bitVectorPrint((pBitvector));
+
 NvU32
 bitVectorSizeOf_IMPL
 (
@@ -297,8 +388,8 @@ NV_STATUS
 bitVectorClr_IMPL
 (
     NV_BITVECTOR *pBitVector,
-    NvU16 bitVectorLast,
-    NvU16 idx
+    NvU32 bitVectorLast,
+    NvU32 idx
 );
 
 NV_STATUS
@@ -320,8 +411,8 @@ NV_STATUS
 bitVectorSet_IMPL
 (
     NV_BITVECTOR *pBitVector,
-    NvU16 bitVectorLast,
-    NvU16 idx
+    NvU32 bitVectorLast,
+    NvU32 idx
 );
 
 NV_STATUS
@@ -336,8 +427,8 @@ NV_STATUS
 bitVectorInv_IMPL
 (
     NV_BITVECTOR *pBitVector,
-    NvU16 bitVectorLast,
-    NvU16 idx
+    NvU32 bitVectorLast,
+    NvU32 idx
 );
 
 NV_STATUS
@@ -393,8 +484,8 @@ NvBool
 bitVectorTest_IMPL
 (
     const NV_BITVECTOR *pBitVector,
-    NvU16 bitVectorLast,
-    NvU16 idx
+    NvU32 bitVectorLast,
+    NvU32 idx
 );
 
 NV_STATUS

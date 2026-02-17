@@ -306,6 +306,7 @@ _portMemCounterDec
 #if PORT_MEM_TRACK_USE_FENCEPOSTS
 #define PORT_MEM_FENCE_HEAD_MAGIC 0x68656164 // 'head'
 #define PORT_MEM_FENCE_TAIL_MAGIC 0x7461696c // 'tail'
+#define PORT_MEM_FENCE_FREE_MAGIC 0x66726565 // 'free'
 
 static NV_INLINE void
 _portMemFenceInit
@@ -560,7 +561,7 @@ static void _portMemTrackAlloc(
     NvU32 gfid
     PORT_MEM_CALLERINFO_COMMA_TYPE_PARAM
 );
-static void _portMemTrackFree(PORT_MEM_ALLOCATOR_TRACKING *pTracking, void *pMem);
+static NvBool _portMemTrackFree(PORT_MEM_ALLOCATOR_TRACKING *pTracking, void *pMem);
 
 
 
@@ -1145,7 +1146,7 @@ _portMemAllocatorAlloc
     NvU32 gfid = 0;
     void *pMem = NULL;
 #if NVOS_IS_LIBOS && defined(DEBUG)
-    __error_injection_probe(NV2082_CTRL_GSP_INJECT_TARGET_NVPORT_MEM_ALLOC, 0);
+    ERROR_INJECTION_PROBE_PF(NV2082_CTRL_GSP_INJECT_TARGET_NVPORT_MEM_ALLOC);
     if (g_bMemoryAllocationFailure)
     {
         portDbgPrintf("  !!! MEMORY ALLOCATION FAILURE !!!\n");
@@ -1215,9 +1216,11 @@ _portMemAllocatorFree
     }
     if (pMem != NULL)
     {
-        _portMemTrackFree(_portMemGetTracking(pAlloc), pMem);
-        pMem = PORT_MEM_SUB_HEADER_PTR(pMem);
-        pAlloc->_portFree(pAlloc, pMem);
+        if (_portMemTrackFree(_portMemGetTracking(pAlloc), pMem))
+        {
+            pMem = PORT_MEM_SUB_HEADER_PTR(pMem);
+            pAlloc->_portFree(pAlloc, pMem);
+        }
     }
 }
 
@@ -1646,7 +1649,7 @@ _portMemTrackAlloc
 #endif
 }
 
-static void
+static NvBool
 _portMemTrackFree
 (
     PORT_MEM_ALLOCATOR_TRACKING *pTracking,
@@ -1654,8 +1657,20 @@ _portMemTrackFree
 )
 {
     NvLength size = 0;
+#if PORT_MEM_TRACK_USE_FENCEPOSTS
+    PORT_MEM_HEADER *pHead = (PORT_MEM_HEADER*)pMem - 1;
+#endif
 
-    if (pTracking == NULL) return;
+    if (pTracking == NULL) return NV_TRUE;
+
+#if PORT_MEM_TRACK_USE_FENCEPOSTS
+    if (pHead->fence.magic == PORT_MEM_FENCE_FREE_MAGIC)
+    {
+        PORT_MEM_PRINT_ERROR("Detected double free of block at address %p\n", pMem);
+        PORT_ASSERT_CHECKED(pHead->fence.magic == PORT_MEM_FENCE_FREE_MAGIC);
+        return NV_FALSE;
+    }
+#endif
 
 #if PORT_MEM_TRACK_ALLOC_SIZE
     size = _portMemExTrackingGetAllocUsableSizeWrapper(pMem);
@@ -1681,6 +1696,12 @@ _portMemTrackFree
         PORT_MEM_COUNTER_DEC(&portMemGlobals.pGfidTracking[gfidIdx]->counter, size);
     }
 #endif
+
+#if PORT_MEM_TRACK_USE_FENCEPOSTS
+    pHead->fence.magic = PORT_MEM_FENCE_FREE_MAGIC;
+#endif
+
+    return NV_TRUE;
 }
 
 

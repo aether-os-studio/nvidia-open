@@ -31,10 +31,10 @@ extern const struct NVOC_CLASS_DEF __nvoc_class_def_ChannelDescendant;
 
 // Forward declarations for KernelGraphicsObject
 void __nvoc_init__ChannelDescendant(ChannelDescendant*, RmHalspecOwner *pRmhalspecowner);
-void __nvoc_init__KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner);
-void __nvoc_init_funcTable_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner);
-NV_STATUS __nvoc_ctor_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner, struct CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams);
-void __nvoc_init_dataField_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner);
+void __nvoc_init__KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner);
+void __nvoc_init_funcTable_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner);
+NV_STATUS __nvoc_ctor_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner, struct CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams);
+void __nvoc_init_dataField_KernelGraphicsObject(KernelGraphicsObject*, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner);
 void __nvoc_dtor_KernelGraphicsObject(KernelGraphicsObject*);
 
 // Structures used within RTTI (run-time type information)
@@ -526,6 +526,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__KernelGraphicsObject =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_kgrobjDestruct(KernelGraphicsObject*);
 void __nvoc_dtor_ChannelDescendant(ChannelDescendant*);
 void __nvoc_dtor_KernelGraphicsObject(KernelGraphicsObject *pThis) {
     __nvoc_kgrobjDestruct(pThis);
@@ -533,13 +534,14 @@ void __nvoc_dtor_KernelGraphicsObject(KernelGraphicsObject *pThis) {
     PORT_UNREFERENCED_VARIABLE(pThis);
 }
 
-void __nvoc_init_dataField_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner) {
+void __nvoc_init_dataField_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner) {
     RmVariantHal *rmVariantHal = &pRmhalspecowner->rmVariantHal;
     const unsigned long rmVariantHal_HalVarIdx = (unsigned long)rmVariantHal->__nvoc_HalVarIdx;
-    ChipHal *chipHal = &pRmhalspecowner->chipHal;
+    ChipHal *chipHal = &pGpuhalspecowner->chipHal;
     const unsigned long chipHal_HalVarIdx = (unsigned long)chipHal->__nvoc_HalVarIdx;
     PORT_UNREFERENCED_VARIABLE(pThis);
     PORT_UNREFERENCED_VARIABLE(pRmhalspecowner);
+    PORT_UNREFERENCED_VARIABLE(pGpuhalspecowner);
     PORT_UNREFERENCED_VARIABLE(rmVariantHal);
     PORT_UNREFERENCED_VARIABLE(rmVariantHal_HalVarIdx);
     PORT_UNREFERENCED_VARIABLE(chipHal);
@@ -547,11 +549,11 @@ void __nvoc_init_dataField_KernelGraphicsObject(KernelGraphicsObject *pThis, RmH
 }
 
 NV_STATUS __nvoc_ctor_ChannelDescendant(ChannelDescendant* , RmHalspecOwner* , struct CALL_CONTEXT *, struct RS_RES_ALLOC_PARAMS_INTERNAL *, PARAM_TO_ENGDESC_FUNCTION *);
-NV_STATUS __nvoc_ctor_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, struct CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams) {
+NV_STATUS __nvoc_ctor_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner, struct CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams) {
     NV_STATUS status = NV_OK;
     status = __nvoc_ctor_ChannelDescendant(&pThis->__nvoc_base_ChannelDescendant, pRmhalspecowner, arg_pCallContext, arg_pParams, ((void *)0));
     if (status != NV_OK) goto __nvoc_ctor_KernelGraphicsObject_fail_ChannelDescendant;
-    __nvoc_init_dataField_KernelGraphicsObject(pThis, pRmhalspecowner);
+    __nvoc_init_dataField_KernelGraphicsObject(pThis, pRmhalspecowner, pGpuhalspecowner);
 
     status = __nvoc_kgrobjConstruct(pThis, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_ctor_KernelGraphicsObject_fail__init;
@@ -566,13 +568,14 @@ __nvoc_ctor_KernelGraphicsObject_exit:
 }
 
 // Vtable initialization
-static void __nvoc_init_funcTable_KernelGraphicsObject_1(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner) {
+static void __nvoc_init_funcTable_KernelGraphicsObject_1(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner) {
     RmVariantHal *rmVariantHal = &pRmhalspecowner->rmVariantHal;
     const unsigned long rmVariantHal_HalVarIdx = (unsigned long)rmVariantHal->__nvoc_HalVarIdx;
-    ChipHal *chipHal = &pRmhalspecowner->chipHal;
+    ChipHal *chipHal = &pGpuhalspecowner->chipHal;
     const unsigned long chipHal_HalVarIdx = (unsigned long)chipHal->__nvoc_HalVarIdx;
     PORT_UNREFERENCED_VARIABLE(pThis);
     PORT_UNREFERENCED_VARIABLE(pRmhalspecowner);
+    PORT_UNREFERENCED_VARIABLE(pGpuhalspecowner);
     PORT_UNREFERENCED_VARIABLE(rmVariantHal);
     PORT_UNREFERENCED_VARIABLE(rmVariantHal_HalVarIdx);
     PORT_UNREFERENCED_VARIABLE(chipHal);
@@ -587,18 +590,40 @@ static void __nvoc_init_funcTable_KernelGraphicsObject_1(KernelGraphicsObject *p
     {
         pThis->__kgrobjGetPromoteIds__ = &kgrobjGetPromoteIds_FWCLIENT;
     }
-} // End __nvoc_init_funcTable_KernelGraphicsObject_1 with approximately 2 basic block(s).
+
+    // kgrobjSetComputeMmio -- halified (2 hals)
+    if (( ((chipHal_HalVarIdx >> 5) == 3UL) && ((1UL << (chipHal_HalVarIdx & 0x1f)) & 0x00002000UL) )) /* ChipHal: T234D */ 
+    {
+        pThis->__kgrobjSetComputeMmio__ = &kgrobjSetComputeMmio_56cd7a;
+    }
+    // default
+    else
+    {
+        pThis->__kgrobjSetComputeMmio__ = &kgrobjSetComputeMmio_IMPL;
+    }
+
+    // kgrobjFreeComputeMmio -- halified (2 hals)
+    if (( ((chipHal_HalVarIdx >> 5) == 3UL) && ((1UL << (chipHal_HalVarIdx & 0x1f)) & 0x00002000UL) )) /* ChipHal: T234D */ 
+    {
+        pThis->__kgrobjFreeComputeMmio__ = &kgrobjFreeComputeMmio_b3696a;
+    }
+    // default
+    else
+    {
+        pThis->__kgrobjFreeComputeMmio__ = &kgrobjFreeComputeMmio_IMPL;
+    }
+} // End __nvoc_init_funcTable_KernelGraphicsObject_1 with approximately 6 basic block(s).
 
 
-// Initialize vtable(s) for 33 virtual method(s).
-void __nvoc_init_funcTable_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner) {
+// Initialize vtable(s) for 35 virtual method(s).
+void __nvoc_init_funcTable_KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner) {
 
-    // Initialize vtable(s) with 1 per-object function pointer(s).
-    __nvoc_init_funcTable_KernelGraphicsObject_1(pThis, pRmhalspecowner);
+    // Initialize vtable(s) with 3 per-object function pointer(s).
+    __nvoc_init_funcTable_KernelGraphicsObject_1(pThis, pRmhalspecowner, pGpuhalspecowner);
 }
 
 // Initialize newly constructed object.
-void __nvoc_init__KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner) {
+void __nvoc_init__KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwner *pRmhalspecowner, GpuHalspecOwner *pGpuhalspecowner) {
 
     // Initialize pointers to inherited data.
     pThis->__nvoc_pbase_Object = &pThis->__nvoc_base_ChannelDescendant.__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object;    // (obj) super^5
@@ -626,20 +651,30 @@ void __nvoc_init__KernelGraphicsObject(KernelGraphicsObject *pThis, RmHalspecOwn
     pThis->__nvoc_metadata_ptr = &__nvoc_metadata__KernelGraphicsObject;    // (kgrobj) this
 
     // Initialize per-object vtables.
-    __nvoc_init_funcTable_KernelGraphicsObject(pThis, pRmhalspecowner);
+    __nvoc_init_funcTable_KernelGraphicsObject(pThis, pRmhalspecowner, pGpuhalspecowner);
 }
 
-NV_STATUS __nvoc_objCreate_KernelGraphicsObject(KernelGraphicsObject **ppThis, Dynamic *pParent, NvU32 createFlags, struct CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams)
+NV_STATUS __nvoc_objCreate_KernelGraphicsObject(KernelGraphicsObject **ppThis, Dynamic *pParent, NvU32 createFlags, struct CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     KernelGraphicsObject *pThis;
     RmHalspecOwner *pRmhalspecowner;
+    GpuHalspecOwner *pGpuhalspecowner;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(KernelGraphicsObject), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(KernelGraphicsObject));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(KernelGraphicsObject));
@@ -647,7 +682,7 @@ NV_STATUS __nvoc_objCreate_KernelGraphicsObject(KernelGraphicsObject **ppThis, D
     pThis->__nvoc_base_ChannelDescendant.__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.createFlags = createFlags;
 
     // pParent must be a valid object that derives from a halspec owner class.
-    NV_ASSERT_OR_RETURN(pParent != NULL, NV_ERR_INVALID_ARGUMENT);
+    NV_CHECK_TRUE_OR_GOTO(status, LEVEL_ERROR, pParent != NULL, NV_ERR_INVALID_ARGUMENT, __nvoc_objCreate_KernelGraphicsObject_cleanup);
 
     // Link the child into the parent unless flagged not to do so.
     if (!(createFlags & NVOC_OBJ_CREATE_FLAGS_PARENT_HALSPEC_ONLY))
@@ -660,42 +695,51 @@ NV_STATUS __nvoc_objCreate_KernelGraphicsObject(KernelGraphicsObject **ppThis, D
         pThis->__nvoc_base_ChannelDescendant.__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.pParent = NULL;
     }
 
+    // HALs are defined by the parent or the first super class.
     if ((pRmhalspecowner = dynamicCast(pParent, RmHalspecOwner)) == NULL)
         pRmhalspecowner = objFindAncestorOfType(RmHalspecOwner, pParent);
-    NV_ASSERT_OR_RETURN(pRmhalspecowner != NULL, NV_ERR_INVALID_ARGUMENT);
+    NV_CHECK_TRUE_OR_GOTO(status, LEVEL_ERROR, pRmhalspecowner != NULL, NV_ERR_INVALID_ARGUMENT, __nvoc_objCreate_KernelGraphicsObject_cleanup);
+    if ((pGpuhalspecowner = dynamicCast(pParent, GpuHalspecOwner)) == NULL)
+        pGpuhalspecowner = objFindAncestorOfType(GpuHalspecOwner, pParent);
+    NV_CHECK_TRUE_OR_GOTO(status, LEVEL_ERROR, pGpuhalspecowner != NULL, NV_ERR_INVALID_ARGUMENT, __nvoc_objCreate_KernelGraphicsObject_cleanup);
 
-    __nvoc_init__KernelGraphicsObject(pThis, pRmhalspecowner);
-    status = __nvoc_ctor_KernelGraphicsObject(pThis, pRmhalspecowner, arg_pCallContext, arg_pParams);
+    // Initialize vtable, RTTI, etc., then call constructor.
+    __nvoc_init__KernelGraphicsObject(pThis, pRmhalspecowner, pGpuhalspecowner);
+    status = __nvoc_ctor_KernelGraphicsObject(pThis, pRmhalspecowner, pGpuhalspecowner, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_objCreate_KernelGraphicsObject_cleanup;
 
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_KernelGraphicsObject_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_ChannelDescendant.__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(KernelGraphicsObject));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_KernelGraphicsObject(KernelGraphicsObject **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    struct CALL_CONTEXT * arg_pCallContext = va_arg(args, struct CALL_CONTEXT *);
-    struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
+    struct CALL_CONTEXT *arg_pCallContext = va_arg(args, struct CALL_CONTEXT *);
+    struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
 
     status = __nvoc_objCreate_KernelGraphicsObject(ppThis, pParent, createFlags, arg_pCallContext, arg_pParams);
 

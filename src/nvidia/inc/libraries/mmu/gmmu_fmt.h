@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2014-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -24,6 +24,14 @@
 #define _NV_GMMU_FMT_H_
 
 #include <ctrl/ctrl90f1.h>
+
+#if (defined(NVRM) || defined(RMCFG_FEATURE_PLATFORM_GSP)) && !defined(NVWATCH)
+#include <rmconfig.h>
+#else
+#if !defined(RMCFG_CHIP_ENABLED)
+#define RMCFG_CHIP_x 0
+#endif
+#endif //(defined(NVRM) || defined(RMCFG_FEATURE_PLATFORM_GSP)) && !defined(NVWATCH)
 
 #ifdef __cplusplus
 extern "C" {

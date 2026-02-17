@@ -551,7 +551,10 @@ namespace DisplayPort
         virtual bool readPsrEvtIndicator(vesaPsrEventIndicator *psrErr) = 0;
         virtual bool readPrSinkDebugInfo(panelReplaySinkDebugInfo *prDbgInfo) = 0;
 
-        virtual void     enableDpTunnelingBwAllocationSupport() = 0;
+        virtual bool     isDpInTunnelingSupported() = 0;
+        virtual void     setDpTunnelingBwAllocationSupport(bool bEnable) = 0;
+        virtual bool     isDpInTunnelingPanelReplayOptimizationSupported() = 0;
+        virtual bool     isDpInTunnelingBwAllocationSupported() = 0;
         virtual bool     isDpTunnelBwAllocationEnabled() = 0;
         virtual bool     getDpTunnelEstimatedBw(NvU8 &estimatedBw) = 0;
         virtual bool     getDpTunnelGranularityMultiplier(NvU8 &granularityMultiplier) = 0;
@@ -568,11 +571,12 @@ namespace DisplayPort
         virtual bool isDp2xChannelCodingCapable() = 0;
         virtual void setIgnoreCableIdCaps(bool bIgnore) = 0;
         virtual void overrideCableIdCap(LinkRate linkRate, bool bEnable) = 0;
+        virtual void setConnectorTypeC(bool bTypeC) = 0;
         virtual void initialize() = 0;
         virtual AuxRetry::status setMainLinkChannelCoding(MainLinkChannelCoding channelCoding) = 0;
-        virtual void setConnectorTypeC(bool bTypeC) = 0;
         virtual void setUSBCCableIDInfo(NV0073_CTRL_DP_USBC_CABLEID_INFO *cableIDInfo) = 0;
         virtual void setCableVconnSourceUnknown() = 0;
+        virtual bool isCableIdHandshakeCompleted() = 0;
         virtual ~DPCDHAL() {}
     };
 
@@ -679,9 +683,6 @@ namespace DisplayPort
                 // If all the LTTPRs supports FEC
                 bool      bFECSupported;
                 bool      bAuxlessALPMSupported;                    // DPCD offset F0009
-                // 0xE000D, DP Tunneling capabilities of DIA which acts as PHY Repeater
-                bool      bDpTunnelingSupported;
-                bool      bDpTunnelingBwAllocModeSupported;
             } repeaterCaps;
 
             struct
@@ -1472,12 +1473,25 @@ namespace DisplayPort
         virtual TriState getDpTunnelBwRequestStatus();
         virtual bool     setDpTunnelBwAllocation(bool bEnable);
 
-        virtual void     enableDpTunnelingBwAllocationSupport()
+        virtual bool     isDpInTunnelingSupported()
         {
-            bEnableDpTunnelBwAllocationSupport = true;
+            return caps.dpInTunnelingCaps.bIsSupported;
         }
 
-        virtual bool isDpTunnelBwAllocationEnabled()
+        virtual bool     isDpInTunnelingPanelReplayOptimizationSupported()
+        {
+            return caps.dpInTunnelingCaps.bIsPanelReplayOptimizationSupported;
+        }
+        virtual bool     isDpInTunnelingBwAllocationSupported()
+        {
+            return caps.dpInTunnelingCaps.bIsBwAllocationSupported;
+        }
+        virtual void     setDpTunnelingBwAllocationSupport(bool bEnable)
+        {
+            bEnableDpTunnelBwAllocationSupport = bEnable;
+        }
+
+        virtual bool     isDpTunnelBwAllocationEnabled()
         {
             return bIsDpTunnelBwAllocationEnabled;
         }
@@ -1490,7 +1504,7 @@ namespace DisplayPort
         bool clearDpTunnelingEstimatedBwStatus();
         bool clearDpTunnelingBwAllocationCapStatus();
 
-        virtual AuxRetry::status notifySDPErrDetectionCapability() { return AuxRetry::ack; }
+        virtual AuxRetry::status notifySDPErrDetectionCapability() { return AuxRetry::ack; }        
         virtual bool isDp2xChannelCodingCapable() { return false; }
         virtual void setIgnoreCableIdCaps(bool bIgnore) { return; }
         virtual void overrideCableIdCap(LinkRate linkRate, bool bEnable) { return; }
@@ -1500,8 +1514,9 @@ namespace DisplayPort
         virtual void initialize(){}
         virtual AuxRetry::status setMainLinkChannelCoding(MainLinkChannelCoding channelCoding){ return AuxRetry::ack; }
         virtual MainLinkChannelCoding getMainLinkChannelCoding() { return ChannelCoding8B10B; }
-        virtual void setConnectorTypeC(bool bTypeC) {};
+        virtual void setConnectorTypeC(bool bTypeC) { return; }
         virtual void setUSBCCableIDInfo(NV0073_CTRL_DP_USBC_CABLEID_INFO *cableIDInfo) {}
+        virtual bool isCableIdHandshakeCompleted() { return false; }
     };
 
 }

@@ -489,6 +489,16 @@ kgmmuFaultBufferAllocSharedMemory_GH100
     memdescSetPageSize(pMemDesc, AT_GPU, RM_PAGE_SIZE_HUGE);
     memdescTagAlloc(status, NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_131, 
                     pMemDesc);
+
+    if (status == NV_ERR_NO_MEMORY)
+    {
+        // TODO: Bug 5299603
+        NV_PRINTF(LEVEL_ERROR, "Allocation failed with big page size, retrying with default page size\n");
+        memdescSetPageSize(pMemDesc, AT_GPU, RM_PAGE_SIZE);
+        memdescTagAlloc(status, NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_131,
+                        pMemDesc);
+    }
+
     if (status != NV_OK)
     {
         goto destroy_memdesc;
@@ -542,7 +552,7 @@ kgmmuFaultBufferFreeSharedMemory_GH100
     pMemDesc = pClientShadowFaultBuffer->pFaultBufferSharedMemDesc;
 
     memdescUnmap(pMemDesc,
-                 NV_TRUE, osGetCurrentProcess(),
+                 NV_TRUE,
                  pClientShadowFaultBuffer->pFaultBufferSharedMemoryAddress,
                  pClientShadowFaultBuffer->pFaultBufferSharedMemoryPriv);
 

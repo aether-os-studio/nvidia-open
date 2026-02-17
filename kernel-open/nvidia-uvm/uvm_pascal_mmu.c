@@ -297,7 +297,6 @@ static NvU64 make_pte_pascal(uvm_aperture_t aperture, NvU64 address, uvm_prot_t 
         // vid address 32:8
         pte_bits |= HWVALUE64(_MMU_VER2, PTE, ADDRESS_VID, address);
 
-
         // peer id 35:33
         if (aperture != UVM_APERTURE_VID)
             pte_bits |= HWVALUE64(_MMU_VER2, PTE, ADDRESS_VID_PEER, UVM_APERTURE_PEER_ID(aperture));
@@ -306,6 +305,7 @@ static NvU64 make_pte_pascal(uvm_aperture_t aperture, NvU64 address, uvm_prot_t 
         pte_bits |= HWVALUE64(_MMU_VER2, PTE, COMPTAGLINE, 0);
     }
 
+    // kind 63:56
     pte_bits |= HWVALUE64(_MMU_VER2, PTE, KIND, NV_MMU_PTE_KIND_PITCH);
 
     return pte_bits;
@@ -327,7 +327,7 @@ static NvU64 make_sparse_pte_pascal(void)
            HWCONST64(_MMU_VER2, PTE, VOL,   TRUE);
 }
 
-static NvU64 poisoned_pte_pascal(void)
+static NvU64 poisoned_pte_pascal(uvm_page_tree_t *tree)
 {
     // An invalid PTE won't be fatal from faultable units like SM, which is the
     // most likely source of bad PTE accesses.
@@ -340,7 +340,7 @@ static NvU64 poisoned_pte_pascal(void)
     // be aligned to page_size.
     NvU64 phys_addr = 0x1bad000000ULL;
 
-    NvU64 pte_bits = make_pte_pascal(UVM_APERTURE_VID, phys_addr, UVM_PROT_READ_ONLY, UVM_MMU_PTE_FLAGS_NONE);
+    NvU64 pte_bits = tree->hal->make_pte(UVM_APERTURE_VID, phys_addr, UVM_PROT_READ_ONLY, UVM_MMU_PTE_FLAGS_NONE);
     return WRITE_HWCONST64(pte_bits, _MMU_VER2, PTE, PRIVILEGE, TRUE);
 }
 

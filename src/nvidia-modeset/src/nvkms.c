@@ -47,7 +47,6 @@
 #include "nvkms-headsurface-ioctl.h"
 #include "nvkms-headsurface-swapgroup.h"
 #include "nvkms-flip.h" /* nvFlipEvo */
-#include "nvkms-vrr.h"
 
 #include "dp/nvdp-connector.h"
 
@@ -974,7 +973,7 @@ static NvBool GrabModesetOwnership(struct NvKmsPerOpenDev *pOpenDev)
     }
 
     pDevEvo->modesetOwner = pOpenDev;
-    pDevEvo->modesetOwnerChanged = TRUE;
+    pDevEvo->modesetOwnerOrSubOwnerChanged = TRUE;
 
     AssignFullNvKmsPermissions(pOpenDev);
     return TRUE;
@@ -1080,6 +1079,7 @@ static void RevokePermissionsInternal(
                 (typeBitmask & NVBIT(NV_KMS_PERMISSIONS_TYPE_SUB_OWNER))) {
                 FreeSwapGroups(pOpenDev);
                 pDevEvo->modesetSubOwner = NULL;
+                pDevEvo->modesetOwnerOrSubOwnerChanged = TRUE;
             }
 
             /*
@@ -1148,7 +1148,7 @@ static NvBool ReleaseModesetOwnership(struct NvKmsPerOpenDev *pOpenDev)
     FreeSwapGroups(pOpenDev);
 
     pDevEvo->modesetOwner = NULL;
-    pDevEvo->modesetOwnerChanged = TRUE;
+    pDevEvo->modesetOwnerOrSubOwnerChanged = TRUE;
     pDevEvo->handleConsoleHotplugs = TRUE;
 
     RestoreConsole(pDevEvo);
@@ -1427,8 +1427,6 @@ static NvBool AllocDevice(struct NvKmsPerOpen *pOpen,
         pParams->reply.dispHandles[disp] = pOpenDev->disp[disp].nvKmsApiHandle;
     }
 
-    pParams->reply.inputLutAppliesToBase = pDevEvo->caps.inputLutAppliesToBase;
-
     ct_assert(ARRAY_LEN(pParams->reply.layerCaps) ==
               ARRAY_LEN(pDevEvo->caps.layerCaps));
 
@@ -1444,11 +1442,6 @@ static NvBool AllocDevice(struct NvKmsPerOpen *pOpen,
     pParams->reply.olutCaps = pDevEvo->caps.olut;
 
     pParams->reply.surfaceAlignment  = NV_EVO_SURFACE_ALIGNMENT;
-    pParams->reply.requiresVrrSemaphores = !pDevEvo->hal->caps.supportsDisplayRate;
-
-    pParams->reply.nIsoSurfacesInVidmemOnly =
-        !!NV5070_CTRL_SYSTEM_GET_CAP(pDevEvo->capsBits,
-            NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY);
 
     pParams->reply.requiresAllAllocationsInSysmem =
         pDevEvo->requiresAllAllocationsInSysmem;
@@ -1486,12 +1479,6 @@ static NvBool AllocDevice(struct NvKmsPerOpen *pOpen,
         pDevEvo->hal->caps.supportsVblankSyncObjects;
 
     pParams->reply.supportsVblankSemControl = pDevEvo->supportsVblankSemControl;
-
-    pParams->reply.supportsInputColorSpace =
-        pDevEvo->hal->caps.supportsInputColorSpace;
-
-    pParams->reply.supportsInputColorRange =
-        pDevEvo->hal->caps.supportsInputColorRange;
 
     if (pOpen->clientType == NVKMS_CLIENT_KERNEL_SPACE) {
         pParams->reply.vtFbBaseAddress = pDevEvo->vtFbInfo.baseAddress;
@@ -1642,6 +1629,7 @@ static void FreeDeviceReference(struct NvKmsPerOpen *pOpen,
         // If this pOpenDev is the modeset sub-owner, implicitly release it.
         if (pOpenDev->pDevEvo->modesetSubOwner == pOpenDev) {
             pOpenDev->pDevEvo->modesetSubOwner = NULL;
+            pOpenDev->pDevEvo->modesetOwnerOrSubOwnerChanged = TRUE;
         }
     }
 
@@ -3524,6 +3512,7 @@ static NvBool AcquirePermissions(struct NvKmsPerOpen *pOpen, void *pParamsVoid)
         }
 
         pOpenDev->pDevEvo->modesetSubOwner = pOpenDev;
+        pOpenDev->pDevEvo->modesetOwnerOrSubOwnerChanged = TRUE;
         AssignFullNvKmsPermissions(pOpenDev);
 
     } else {
@@ -4344,22 +4333,6 @@ static NvBool GetMuxState(
     return pParams->reply.state != MUX_STATE_GET;
 }
 
-static NvBool ExportVrrSemaphoreSurface(
-    struct NvKmsPerOpen *pOpen,
-    void *pParamsVoid)
-{
-    struct NvKmsExportVrrSemaphoreSurfaceParams *pParams = pParamsVoid;
-    const struct NvKmsExportVrrSemaphoreSurfaceRequest *req = &pParams->request;
-    const struct NvKmsPerOpenDev *pOpenDev =
-        GetPerOpenDev(pOpen, pParams->request.deviceHandle);
-
-    if (pOpenDev == NULL) {
-        return FALSE;
-    }
-
-    return nvExportVrrSemaphoreSurface(pOpenDev->pDevEvo, req->memFd);
-}
-
 static void EnableAndSetupVblankSyncObject(NVDispEvoRec *pDispEvo,
                                            const NvU32 apiHead,
                                            NVVblankSyncObjectRec *pVblankSyncObject,
@@ -4964,24 +4937,6 @@ static NvBool AccelVblankSemControls(
                 pParams->request.headMask);
 }
 
-static NvBool VrrSignalSemaphore(
-    struct NvKmsPerOpen *pOpen,
-    void *pParamsVoid)
-{
-    struct NvKmsPerOpenDev *pOpenDev;
-
-    const struct NvKmsVrrSignalSemaphoreParams *pParams = pParamsVoid;
-    NvS32 vrrSemaphoreIndex = pParams->request.vrrSemaphoreIndex;
-
-    pOpenDev = GetPerOpenDev(pOpen, pParams->request.deviceHandle);
-    if (pOpenDev == NULL) {
-        return FALSE;
-    }
-
-    nvVrrSignalSemaphore(pOpenDev->pDevEvo, vrrSemaphoreIndex);
-    return TRUE;
-}
-
 static NvBool FramebufferConsoleDisabled(
     struct NvKmsPerOpen *pOpen,
     void *pParamsVoid)
@@ -5124,7 +5079,6 @@ NvBool nvKmsIoctl(
         ENTRY(NVKMS_IOCTL_RELEASE_SWAP_GROUP, ReleaseSwapGroup),
         ENTRY(NVKMS_IOCTL_SWITCH_MUX, SwitchMux),
         ENTRY(NVKMS_IOCTL_GET_MUX_STATE, GetMuxState),
-        ENTRY(NVKMS_IOCTL_EXPORT_VRR_SEMAPHORE_SURFACE, ExportVrrSemaphoreSurface),
         ENTRY(NVKMS_IOCTL_ENABLE_VBLANK_SYNC_OBJECT, EnableVblankSyncObject),
         ENTRY(NVKMS_IOCTL_DISABLE_VBLANK_SYNC_OBJECT, DisableVblankSyncObject),
         ENTRY(NVKMS_IOCTL_NOTIFY_VBLANK, NotifyVblank),
@@ -5132,7 +5086,6 @@ NvBool nvKmsIoctl(
         ENTRY(NVKMS_IOCTL_ENABLE_VBLANK_SEM_CONTROL, EnableVblankSemControl),
         ENTRY(NVKMS_IOCTL_DISABLE_VBLANK_SEM_CONTROL, DisableVblankSemControl),
         ENTRY(NVKMS_IOCTL_ACCEL_VBLANK_SEM_CONTROLS, AccelVblankSemControls),
-        ENTRY(NVKMS_IOCTL_VRR_SIGNAL_SEMAPHORE, VrrSignalSemaphore),
         ENTRY(NVKMS_IOCTL_FRAMEBUFFER_CONSOLE_DISABLED, FramebufferConsoleDisabled),
     };
 
@@ -5342,7 +5295,7 @@ fail:
 
 extern const char *const pNV_KMS_ID;
 
-#if NVKMS_PROCFS_ENABLE
+#if NVKMS_PROCFS_OBJECT_DUMP
 
 static const char *ProcFsPerOpenTypeString(
     enum NvKmsPerOpenType type)
@@ -5710,44 +5663,6 @@ ProcFsPrintSurfaces(
     }
 }
 
-static void
-ProcFsPrintHeadSurface(
-    void *data,
-    char *buffer,
-    size_t size,
-    nvkms_procfs_out_string_func_t *outString)
-{
-    NVDevEvoPtr pDevEvo;
-    NVDispEvoPtr pDispEvo;
-    NvU32 dispIndex, apiHead;
-    NVEvoInfoStringRec infoString;
-
-    FOR_ALL_EVO_DEVS(pDevEvo) {
-
-        nvInitInfoString(&infoString, buffer, size);
-        nvEvoLogInfoString(&infoString,
-                           "pDevEvo (deviceId:%02d)         : %p",
-                           pDevEvo->deviceId.rmDeviceId, pDevEvo);
-        outString(data, buffer);
-
-        FOR_ALL_EVO_DISPLAYS(pDispEvo, dispIndex, pDevEvo) {
-
-            nvInitInfoString(&infoString, buffer, size);
-            nvEvoLogInfoString(&infoString,
-                               " pDispEvo (dispIndex:%02d)      : %p",
-                               dispIndex, pDispEvo);
-            outString(data, buffer);
-
-            for (apiHead = 0; apiHead < pDevEvo->numApiHeads; apiHead++) {
-                nvInitInfoString(&infoString, buffer, size);
-                nvHsProcFs(&infoString, pDevEvo, dispIndex, apiHead);
-                nvEvoLogInfoString(&infoString, "");
-                outString(data, buffer);
-            }
-        }
-    }
-}
-
 static const char *SwapGroupPerEyeStereoString(const NvU32 request)
 {
     const NvU32 value =
@@ -5939,6 +5854,50 @@ ProcFsPrintDeferredRequestFifos(
     }
 }
 
+
+#endif /* NVKMS_PROCFS_OBJECT_DUMP */
+
+#if NVKMS_HEADSURFACE_STATS
+static void
+ProcFsPrintHeadSurface(
+    void *data,
+    char *buffer,
+    size_t size,
+    nvkms_procfs_out_string_func_t *outString)
+{
+    NVDevEvoPtr pDevEvo;
+    NVDispEvoPtr pDispEvo;
+    NvU32 dispIndex, apiHead;
+    NVEvoInfoStringRec infoString;
+
+    FOR_ALL_EVO_DEVS(pDevEvo) {
+
+        nvInitInfoString(&infoString, buffer, size);
+        nvEvoLogInfoString(&infoString,
+                           "pDevEvo (deviceId:%02d)         : %p",
+                           pDevEvo->deviceId.rmDeviceId, pDevEvo);
+        outString(data, buffer);
+
+        FOR_ALL_EVO_DISPLAYS(pDispEvo, dispIndex, pDevEvo) {
+
+            nvInitInfoString(&infoString, buffer, size);
+            nvEvoLogInfoString(&infoString,
+                               " pDispEvo (dispIndex:%02d)      : %p",
+                               dispIndex, pDispEvo);
+            outString(data, buffer);
+
+            for (apiHead = 0; apiHead < pDevEvo->numApiHeads; apiHead++) {
+                nvInitInfoString(&infoString, buffer, size);
+                nvHsProcFs(&infoString, pDevEvo, dispIndex, apiHead);
+                nvEvoLogInfoString(&infoString, "");
+                outString(data, buffer);
+            }
+        }
+    }
+}
+#endif /* NVKMS_HEADSURFACE_STATS */
+
+#if NVKMS_PROCFS_CRCS
 static void
 ProcFsPrintDpyCrcs(
     void *data,
@@ -6021,17 +5980,34 @@ ProcFsPrintDpyCrcs(
         }
     }
 }
+#endif /* NVKMS_PROCFS_CRCS */
 
 static const char *
-SignalFormatString(NvKmsConnectorSignalFormat signalFormat)
+SignalFormatString(const enum nvKmsTimingsProtocol protocol)
 {
-    switch (signalFormat) {
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_VGA:     return "VGA";
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_LVDS:    return "LVDS";
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_TMDS:    return "TMDS";
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_DP:      return "DP";
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_DSI:     return "DSI";
-    case NVKMS_CONNECTOR_SIGNAL_FORMAT_UNKNOWN: break;
+    switch (protocol) {
+    case NVKMS_PROTOCOL_SOR_SINGLE_TMDS_A:
+    case NVKMS_PROTOCOL_SOR_SINGLE_TMDS_B:
+        return "TMDS";
+
+    case NVKMS_PROTOCOL_SOR_DUAL_TMDS:
+        return "Dual TMDS";
+
+    case NVKMS_PROTOCOL_SOR_DP_A:
+    case NVKMS_PROTOCOL_SOR_DP_B:
+        return "DP";
+
+    case NVKMS_PROTOCOL_SOR_LVDS_CUSTOM:
+        return "LVDS";
+
+    case NVKMS_PROTOCOL_SOR_HDMI_FRL:
+        return "HDMI FRL";
+
+    case NVKMS_PROTOCOL_DSI:
+        return "DSI";
+
+    case NVKMS_PROTOCOL_PIOR_EXT_TMDS_ENC:
+        return "EXT TMDS";
     }
 
     return "unknown";
@@ -6067,27 +6043,24 @@ ProcFsPrintHeads(
 
         nvInitInfoString(&infoString, buffer, size);
         nvEvoLogInfoString(&infoString,
-                "pDevEvo (deviceId:%02d)         : %p",
-                pDevEvo->deviceId.rmDeviceId, pDevEvo);
+                "deviceId                     : %02d",
+                pDevEvo->deviceId.rmDeviceId);
         outString(data, buffer);
 
         FOR_ALL_EVO_DISPLAYS(pDispEvo, dispIndex, pDevEvo) {
             const NVLockGroup *pLockGroup = pDispEvo->pLockGroup;
 
-            nvInitInfoString(&infoString, buffer, size);
-            nvEvoLogInfoString(&infoString,
-                    " pDispEvo (dispIndex:%02d)      : %p",
-                    dispIndex, pDispEvo);
             if (pLockGroup != NULL) {
                 const NvBool flipLocked = nvIsLockGroupFlipLocked(pLockGroup);
+                nvInitInfoString(&infoString, buffer, size);
                 nvEvoLogInfoString(&infoString,
-                        "  pLockGroup                    : %p",
+                        " pLockGroup                  : %p",
                         pLockGroup);
                 nvEvoLogInfoString(&infoString,
-                        "   flipLock                     : %s",
+                        "  flipLock                   : %s",
                         flipLocked ? "yes" : "no");
+                outString(data, buffer);
             }
-            outString(data, buffer);
 
             if (pDevEvo->coreInitMethodsPending) {
                 /* If the core channel has been allocated but no mode has yet
@@ -6095,7 +6068,7 @@ ProcFsPrintHeads(
                  * driven by the console, but data like the mode timings will
                  * be bogus. */
                 nvInitInfoString(&infoString, buffer, size);
-                nvEvoLogInfoString(&infoString, "  (not yet initialized)");
+                nvEvoLogInfoString(&infoString, " (not yet initialized)");
                 outString(data, buffer);
                 continue;
             }
@@ -6111,29 +6084,43 @@ ProcFsPrintHeads(
                 nvInitInfoString(&infoString, buffer, size);
                 if (pConnectorEvo == NULL) {
                     nvEvoLogInfoString(&infoString,
-                            "  head %d                      : inactive",
+                            " head %d                      : inactive",
                             head);
                 } else {
                     const NvU32 refreshRate10kHz =
                         nvGetRefreshRate10kHz(pHwModeTimings);
+                    const NVDpyEvoRec *pDpyEvo;
+
+                    /* Find the dpy driven by this head.  Multiple heads may be
+                     * driving the same dpy with 2head1or, but a head should
+                     * only drive one dpy at a time. */
+                    FOR_ALL_EVO_DPYS(pDpyEvo, pDispEvo->validDisplays, pDispEvo) {
+                        const NvU32 apiHead = pDpyEvo->apiHead;
+                        if (apiHead == NV_INVALID_HEAD) {
+                            continue;
+                        }
+                        if (pDispEvo->apiHeadState[apiHead].hwHeadsMask &
+                            NVBIT(head)) {
+                            nvEvoLogInfoString(&infoString,
+                                    " head %d                      : %s",
+                                    head, pDpyEvo->name);
+                            break;
+                        }
+                    }
 
                     nvEvoLogInfoString(&infoString,
-                            "  head %d                      : %s",
-                            head, pConnectorEvo->name);
+                            "  protocol                   : %s",
+                            SignalFormatString(pHwModeTimings->protocol));
 
                     nvEvoLogInfoString(&infoString,
-                            "   protocol                   : %s",
-                            SignalFormatString(pConnectorEvo->signalFormat));
-
-                    nvEvoLogInfoString(&infoString,
-                            "   mode                       : %u x %u @ %u.%04u Hz",
+                            "  mode                       : %u x %u @ %u.%04u Hz",
                             nvEvoVisibleWidth(pHwModeTimings),
                             nvEvoVisibleHeight(pHwModeTimings),
                             refreshRate10kHz / 10000,
                             refreshRate10kHz % 10000);
 
                     nvEvoLogInfoString(&infoString,
-                            "   depth                      : %s",
+                            "  depth                      : %s",
                             PixelDepthString(pHeadState->pixelDepth));
                 }
                 outString(data, buffer);
@@ -6142,25 +6129,107 @@ ProcFsPrintHeads(
     }
 }
 
-#endif /* NVKMS_PROCFS_ENABLE */
+/*
+ * Dump all dpys for all devices, grouped by connector.
+ * With DP MST there may be multiple dpys on the same connector.
+ */
+static void
+ProcFsPrintDpys(
+    void *data,
+    char *buffer,
+    size_t size,
+    nvkms_procfs_out_string_func_t *outString)
+{
+    const NVDevEvoRec *pDevEvo;
+    const NVDispEvoRec *pDispEvo;
+    NvU32 dispIndex;
+    NVEvoInfoStringRec infoString;
+
+    FOR_ALL_EVO_DEVS(pDevEvo) {
+
+        nvInitInfoString(&infoString, buffer, size);
+        nvEvoLogInfoString(&infoString,
+                "deviceId                     : %02d",
+                pDevEvo->deviceId.rmDeviceId);
+        outString(data, buffer);
+
+        FOR_ALL_EVO_DISPLAYS(pDispEvo, dispIndex, pDevEvo) {
+
+            const NVConnectorEvoRec *pConnectorEvo;
+
+            FOR_ALL_EVO_CONNECTORS(pConnectorEvo, pDispEvo) {
+                const NVDpyEvoRec *pDpyEvo;
+
+                nvInitInfoString(&infoString, buffer, size);
+                nvEvoLogInfoString(&infoString,
+                        " connector                   : %s",
+                        pConnectorEvo->name);
+                outString(data, buffer);
+
+                FOR_ALL_EVO_DPYS(pDpyEvo, pDispEvo->validDisplays, pDispEvo) {
+                    const char *name;
+
+                    if (pDpyEvo->pConnectorEvo != pConnectorEvo) {
+                        continue;
+                    }
+
+                    nvInitInfoString(&infoString, buffer, size);
+                    if (nvDpyIdIsInDpyIdList(pDpyEvo->id,
+                                             pDispEvo->connectedDisplays)) {
+
+                        name = pDpyEvo->name;
+                    } else {
+                        name = "(not connected)";
+                    }
+
+                    nvEvoLogInfoString(&infoString,
+                            "  dpy                        : %s", name);
+
+                    if (pDpyEvo->edid.length) {
+                        NvU32 i;
+                        const NvU8 *buf = pDpyEvo->edid.buffer;
+                        nvEvoLogInfoStringRaw(&infoString,
+                            "   edid                      :");
+
+                        for (i = 0; i < pDpyEvo->edid.length; i++) {
+                            if (i % 16 == 0) {
+                                nvEvoLogInfoStringRaw(&infoString, "\n  ");
+                            }
+                            if (i % 8 == 0) {
+                                nvEvoLogInfoStringRaw(&infoString, " ");
+                            }
+                            nvEvoLogInfoStringRaw(&infoString, " %02x",
+                                                  buf[i]);
+                        }
+                        nvEvoLogInfoStringRaw(&infoString, "\n");
+                    }
+                    outString(data, buffer);
+                }
+            }
+        }
+    }
+}
 
 void nvKmsGetProcFiles(const nvkms_procfs_file_t **ppProcFiles)
 {
-#if NVKMS_PROCFS_ENABLE
     static const nvkms_procfs_file_t procFiles[] = {
+#if NVKMS_PROCFS_OBJECT_DUMP
         { "clients",                ProcFsPrintClients },
         { "surfaces",               ProcFsPrintSurfaces },
-        { "headsurface",            ProcFsPrintHeadSurface },
         { "deferred-request-fifos", ProcFsPrintDeferredRequestFifos },
+#endif
+#if NVKMS_HEADSURFACE_STATS
+        { "headsurface",            ProcFsPrintHeadSurface },
+#endif
+#if NVKMS_PROCFS_CRCS
         { "crcs",                   ProcFsPrintDpyCrcs },
+#endif
         { "heads",                  ProcFsPrintHeads },
+        { "dpys",                   ProcFsPrintDpys },
         { NULL, NULL },
     };
 
     *ppProcFiles = procFiles;
-#else
-    *ppProcFiles = NULL;
-#endif
 }
 
 static void FreeGlobalState(void)
@@ -6566,7 +6635,8 @@ static void AllocSurfaceCtxDmasForAllOpens(NVDevEvoRec *pDevEvo)
                             pSurfaceEvo->planes[planeIndex].rmHandle,
                             pSurfaceEvo->layout,
                             pSurfaceEvo->planes[planeIndex].rmObjectSizeInBytes - 1,
-                            &pSurfaceEvo->planes[planeIndex].surfaceDesc);
+                            &pSurfaceEvo->planes[planeIndex].surfaceDesc,
+                            pSurfaceEvo->mapToDisplayRm);
                 if (ret != NVOS_STATUS_SUCCESS) {
                     FreeSurfaceCtxDmasForAllOpens(pDevEvo);
                     nvAssert(!"Failed to re-allocate surface descriptor");
@@ -6812,6 +6882,44 @@ static void ServiceOneDeferredRequestFifo(
 
         get = (get + 1) % ARRAY_LEN(fifo->request);
     }
+
+
+    /*  
+    ARM weakly ordered memory model can cause the store on the "get"
+    of the deferred request fifo to be written before the items on the
+    fifo have actually been processed.
+    
+    To ensure this does not happens we need to add a barrier.
+    We chose "dmb oshst" as the minimal (most relaxed)  barrier that still
+    guarantees correct behaviour.
+    
+    Breaking down the barrier command by its parts:
+    dmb: Guarantees that all writes or loads (depending on a parameter) before
+         the barrier are completed before any writes or loads after the barrier are
+         executed (dsb would also work but those are a lot heavier barriers).
+    
+    osh: outer shareable scope, it means that the scope is the cpu's
+         (in linux the cpus that the kernel runs in SMP are an inner shareable domain)
+         and peripherals such as the gpu.
+         Full system would be a super set of what we need, while inner shareable
+         scope/domain won't be enough because it would exclude the gpu.
+    
+    st: store, meaning that the barriers would guarantee that all stores before the
+        barrier would have completed, before any stores after the barrier.
+        In our case here, the store that updates "get" at the end, which we care about
+        (i.e. all processing and variable modifications, that is stores,  
+        must have comploeted before we indicate such).
+
+
+    NOTE: This is an initial change, once a set of unified macros (which don't exist
+          yet) to handle barriers across the driver across architectures, then the
+          assembly code below should be changed to use such macros.
+    */
+
+
+#if NVCPU_IS_FAMILY_ARM
+    __asm__ __volatile__ ("dmb oshst" : : : "memory");
+#endif
 
     fifo->get = put;
 }

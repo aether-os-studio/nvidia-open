@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -30,9 +30,12 @@
 #define NVOC_CONF_COMPUTE_H_PRIVATE_ACCESS_ALLOWED
 
 #include "gpu/conf_compute/conf_compute.h"
-#include "published/hopper/gh100/dev_fuse.h"
+#include "published/hopper/gh100/hwproject.h"
+#include "published/hopper/gh100/dev_fuse_zb.h"
 #include "rmapi/rmapi.h"
 #include "conf_compute/cc_keystore.h"
+#include "nvdevid.h"
+#include "detect-self-hosted.h"
 //#include "hopper/gh100/dev_se_seb.h"
 
 /*!
@@ -48,9 +51,8 @@ confComputeIsDebugModeEnabled_GH100
     ConfidentialCompute *pConfCompute
 )
 {
-   NvU32 fuseStat = GPU_REG_RD32(pGpu, NV_FUSE_OPT_SECURE_GSP_DEBUG_DIS);
-
-   return !FLD_TEST_DRF(_FUSE_OPT, _SECURE_GSP_DEBUG_DIS, _DATA, _YES, fuseStat);
+    NvU32 fuseStat = GPU_REG_RD32(pGpu, NV_FUSE0_PRI_BASE + NV_FUSE_ZB_OPT_SECURE_GSP_DEBUG_DIS);
+    return !FLD_TEST_DRF(_FUSE_ZB, _OPT_SECURE_GSP_DEBUG_DIS, _DATA, _YES, fuseStat);
 }
 
 /*!
@@ -75,11 +77,11 @@ confComputeIsGpuCcCapable_GH100
         return NV_FALSE;
     }
 
-    reg = GPU_REG_RD32(pGpu, NV_FUSE_SPARE_BIT_0);
-    if (FLD_TEST_DRF(_FUSE, _SPARE_BIT_0, _DATA, _ENABLE, reg))
+    reg = GPU_REG_RD32(pGpu, NV_FUSE0_PRI_BASE + NV_FUSE_ZB_SPARE_BIT_0);
+    if (FLD_TEST_DRF(_FUSE_ZB, _SPARE_BIT_0, _DATA, _ENABLE, reg))
     {
-        if (FLD_TEST_DRF(_FUSE, _SPARE_BIT_1, _DATA, _ENABLE, GPU_REG_RD32(pGpu, NV_FUSE_SPARE_BIT_1))
-            && FLD_TEST_DRF(_FUSE, _SPARE_BIT_2, _DATA, _DISABLE, GPU_REG_RD32(pGpu, NV_FUSE_SPARE_BIT_2)))
+        if (FLD_TEST_DRF(_FUSE_ZB, _SPARE_BIT_1, _DATA, _ENABLE, GPU_REG_RD32(pGpu, NV_FUSE0_PRI_BASE + NV_FUSE_ZB_SPARE_BIT_1))
+            && FLD_TEST_DRF(_FUSE_ZB, _SPARE_BIT_2, _DATA, _DISABLE, GPU_REG_RD32(pGpu, NV_FUSE0_PRI_BASE + NV_FUSE_ZB_SPARE_BIT_2)))
         {
             return NV_TRUE;
         }
@@ -440,7 +442,7 @@ NV_STATUS confComputeUpdateSecrets_GH100(ConfidentialCompute *pConfCompute,
     while (confComputeGetNextChannelForKey(pGpu, pConfCompute, &iterator, h2dKey, &pKernelChannel) == NV_OK)
     {
         NV_ASSERT_OK_OR_RETURN(confComputeKeyStoreRetrieveViaChannel(
-            pConfCompute, pKernelChannel, ROTATE_IV_ALL_VALID, NV_FALSE, &pKernelChannel->clientKmb));
+            pConfCompute, pKernelChannel, ROTATE_IV_ALL_VALID, CHANNEL_IV_OPERATION_NONE, &pKernelChannel->clientKmb));
 
         // After key rotation channel counter stays the same but message counter is cleared.
         pKernelChannel->clientKmb.encryptBundle.iv[0] = 0x00000000;
@@ -460,5 +462,24 @@ NV_STATUS confComputeUpdateSecrets_GH100(ConfidentialCompute *pConfCompute,
             pKernelChannel->clientKmb.hmacBundle.nonce[5] = 0x00000000;
         }
 	}
+    return NV_OK;
+}
+
+/*!
+ * @brief Hopper implementation for checking CC support on self-hosted platforms
+ */
+NV_STATUS
+confComputeTestPlatformSupport_GH100
+(
+    OBJGPU              *pGpu,
+    ConfidentialCompute *pConfCompute
+)
+{
+    if (pci_devid_is_self_hosted(DRF_VAL(_PCI, _SUBID, _DEVICE, pGpu->idInfo.PCIDeviceID)) &&
+        (pConfCompute->getProperty(pConfCompute, PDB_PROP_CONFCOMPUTE_ENABLED)))
+    {
+        NV_PRINTF(LEVEL_ERROR, "CC is not supported on self-hosted platforms\n");
+        return NV_ERR_NOT_SUPPORTED;
+    }
     return NV_OK;
 }

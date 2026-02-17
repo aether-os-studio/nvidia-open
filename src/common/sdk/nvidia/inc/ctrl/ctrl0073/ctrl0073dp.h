@@ -1705,7 +1705,9 @@ typedef struct NV0073_CTRL_CMD_DP_SEND_ACT_PARAMS {
  *   bSupportDPDownSpread
  *     Returns NV_TRUE if GPU support downspread.
  *   bAvoidHBR3
- *     Returns if we need to avoid HBR3 as much as possible
+ *     Returns NV_TRUE if we need to avoid HBR3 as much as possible
+ *   bIsDpTunnelingHwBugWarEnabled
+ *     Returns NV_TRUE if USB4 DP tunneling HW bug WAR is enabled for the chip.
  *
  *  DSC caps
  *
@@ -1737,6 +1739,7 @@ typedef struct NV0073_CTRL_CMD_DP_GET_CAPS_PARAMS {
     NvBool                         bUseRgFlushSequence;
     NvBool                         bSupportDPDownSpread;
     NvBool                         bAvoidHBR3;
+    NvBool                         bIsDpTunnelingHwBugWarEnabled;
     NV0073_CTRL_CMD_DSC_CAP_PARAMS DSC;
 } NV0073_CTRL_CMD_DP_GET_CAPS_PARAMS;
 
@@ -3616,5 +3619,83 @@ typedef struct NV0073_CTRL_DP_USBC_CABLEID_INFO_PARAMS {
     NvU32                            displayId;
     NV0073_CTRL_DP_USBC_CABLEID_INFO cableIDInfo;
 } NV0073_CTRL_DP_USBC_CABLEID_INFO_PARAMS;
+
+/*
+ * NV0073_CTRL_CMD_STUFF_DUMMY_SYMBOL_WAR
+ *
+ * Some sink devices require extra padding between SDPs. This is programmed for GB20x+ GPUs.
+ *
+ *   subDeviceInstance
+ *     This parameter specifies the subdevice instance within the
+ *     NV04_DISPLAY_COMMON parent device to which the operation should be
+ *     directed. This parameter must specify a value between zero and the
+ *     total number of subdevices within the parent device.  This parameter
+ *     should be set to zero for default behavior.
+ *   displayId
+ *     This parameter specifies the ID of the display for which the control
+ *     is being issued.  The display ID must be valid.
+ *   head
+ *     This parameter specifies the head index for the operation.
+ *   bEnable
+ *     Boolean to enable or disable the WAR.
+ *
+ * Possible status values returned are:
+ *   NV_OK
+ *   NV_ERR_INVALID_PARAM_STRUCT
+ *   NV_ERR_INVALID_ARGUMENT
+ */
+#define NV0073_CTRL_STUFF_DUMMY_SYMBOL_WAR_PARAMS_MESSAGE_ID (0x8EU)
+
+typedef struct NV0073_CTRL_STUFF_DUMMY_SYMBOL_WAR_PARAMS {
+    NvU32  subDeviceInstance;
+    NvU32  displayId;
+    NvU32  head;
+    NvBool bEnable;
+} NV0073_CTRL_STUFF_DUMMY_SYMBOL_WAR_PARAMS;
+
+#define NV0073_CTRL_CMD_STUFF_DUMMY_SYMBOL_WAR (0x73138eU) /* finn: Evaluated from "(FINN_NV04_DISPLAY_COMMON_DP_INTERFACE_ID << 8) | NV0073_CTRL_STUFF_DUMMY_SYMBOL_WAR_PARAMS_MESSAGE_ID" */
+
+/*
+ * NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO
+ *
+ * Get USB4 DP_IN Adapter number from RM
+ *
+ *   subDeviceInstance
+ *     This parameter specifies the subdevice instance within the
+ *     NV04_DISPLAY_COMMON parent device to which the operation should be
+ *     directed. This parameter must specify a value between zero and the
+ *     total number of subdevices within the parent device.  This parameter
+ *     should be set to zero for default behavior.
+ *   displayId
+ *     This parameter specifies the ID of the display for which the control
+ *     is being issued.  The display ID must be valid.
+ *   driverId
+ *     This parameter uniquely identifies the host router in the system.
+ *   dpInAdapterNumber
+ *     DP_IN adapter number that belongs to the displayId
+ *   topologyId
+ *     Unique number to identify the USB4 router topology
+ * Possible status values returned are:
+ *   NV_OK
+ *   NV_ERR_INVALID_PARAM_STRUCT
+ *   NV_ERR_INVALID_ARGUMENT
+ */
+#define NV0073_CTRL_DP_USB_TOPOLOGY_ID_LENGTH  5
+
+typedef struct NV0073_CTRL_DP_USB4_INFO {
+    NvU8 driverId;
+    NvU8 dpInAdapterNumber;
+    NvU8 topologyId[NV0073_CTRL_DP_USB_TOPOLOGY_ID_LENGTH];
+} NV0073_CTRL_DP_USB4_INFO;
+
+#define NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO_PARAMS_MESSAGE_ID (0x8FU)
+
+typedef struct NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO_PARAMS {
+    NvU32                    subDeviceInstance;
+    NvU32                    displayId;
+    NV0073_CTRL_DP_USB4_INFO usb4Info;
+} NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO_PARAMS;
+
+#define NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO (0x73138fU) /* finn: Evaluated from "(FINN_NV04_DISPLAY_COMMON_DP_INTERFACE_ID << 8) | NV0073_CTRL_CMD_GET_USB_DPIN_ADAPTER_INFO_PARAMS_MESSAGE_ID" */
 
 /* _ctrl0073dp_h_ */

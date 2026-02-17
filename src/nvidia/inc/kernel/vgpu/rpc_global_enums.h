@@ -234,7 +234,8 @@ enum {
     X(RM, CTRL_CMD_GET_CHIPLET_HS_CREDIT_POOL,                    224)
     X(RM, CTRL_CMD_GET_HS_CREDITS_MAPPING,                        225)
     X(RM, CTRL_EXEC_PARTITIONS_EXPORT,                            226)
-    X(RM, NUM_FUNCTIONS,                                          227)
+    X(RM, CTRL_CMD_INTERNAL_GPU_CHECK_CTS_ID_VALID,               227)
+    X(RM, NUM_FUNCTIONS,                                          228)
 #ifdef DEFINING_X_IN_RPC_GLOBAL_ENUMS_H
 };
 #   undef X
@@ -282,7 +283,10 @@ enum {
     E(GSP_POST_NOCAT_RECORD,                                  0x1020)
     E(FECS_ERROR,                                             0x1021)
     E(RECOVERY_ACTION,                                        0x1022)
-    E(NUM_EVENTS,                                             0x1023)
+    E(TRIGGER_BUGCHECK,                                       0x1023)
+    E(BIND_BAR2,                                              0x1024)
+    E(FORCED_DRIVER_SHUTDOWN,                                 0x1025)
+    E(NUM_EVENTS,                                             0x1026)
 #ifdef DEFINING_E_IN_RPC_GLOBAL_ENUMS_H
 };
 #   undef E

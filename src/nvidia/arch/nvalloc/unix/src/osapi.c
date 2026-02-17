@@ -615,13 +615,13 @@ static void RmExecuteWorkItem(
 {
     nv_work_item_t *pWi = (nv_work_item_t *)pWorkItem;
     NvU32 gpuMask = 0;
-    NvU32 releaseLocks = 0;
+    OsQueueWorkItemFlags releaseLocks = {0};
 
-    if (!(pWi->flags & NV_WORK_ITEM_FLAGS_REQUIRES_GPU) &&
-        ((pWi->flags & OS_QUEUE_WORKITEM_FLAGS_LOCK_GPUS) ||
-         (pWi->flags & OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_DEVICE) ||
-         (pWi->flags & OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE) ||
-         (pWi->flags & OS_QUEUE_WORKITEM_FLAGS_FULL_GPU_SANITY)))
+    if (!(pWi->flags.bRequiresGpu) &&
+        (pWi->flags.bLockGpus ||
+         pWi->flags.bLockGpuGroupDevice ||
+         pWi->flags.bLockGpuGroupSubdevice ||
+         pWi->flags.bFullGpuSanity))
     {
         // Requesting one of the GPU locks without providing a GPU instance
         NV_ASSERT(0);
@@ -636,7 +636,7 @@ static void RmExecuteWorkItem(
     }
 
     // Some work items may not require a valid GPU instance
-    if (pWi->flags & NV_WORK_ITEM_FLAGS_REQUIRES_GPU)
+    if (pWi->flags.bRequiresGpu)
     {
         // Make sure that pGpu is present
         OBJGPU *pGpu = gpumgrGetGpu(pWi->gpuInstance);
@@ -646,10 +646,14 @@ static void RmExecuteWorkItem(
 
             NV_ASSERT_OR_GOTO(nv != NULL, done);
 
-            if (!((pWi->flags & OS_QUEUE_WORKITEM_FLAGS_DROP_ON_UNLOAD_QUEUE_FLUSH) && os_is_queue_flush_ongoing(nv->queue)))
+            NvU32 prevGpuInst = gpumgrSetCurrentGpuInstance(pGpu->gpuInstance);
+
+            if (!(pWi->flags.bDropOnUnloadQueueFlush && os_is_queue_flush_ongoing(nv->queue)))
             {
                 pWi->func.pGpuFunction(pWi->gpuInstance, pWi->pData);
             }
+
+            gpumgrSetCurrentGpuInstance(prevGpuInst);
         }
         else
         {
@@ -658,7 +662,7 @@ static void RmExecuteWorkItem(
     }
     else
     {
-        if (!((pWi->flags & OS_QUEUE_WORKITEM_FLAGS_DROP_ON_UNLOAD_QUEUE_FLUSH) && os_is_queue_flush_ongoing(NULL)))
+        if (!(pWi->flags.bDropOnUnloadQueueFlush && os_is_queue_flush_ongoing(NULL)))
         {
             pWi->func.pSystemFunction(pWi->pData);
         }
@@ -668,8 +672,7 @@ done:
     // Release any locks taken
     workItemLocksRelease(releaseLocks, gpuMask);
 
-    if ((pWi->pData != NULL) &&
-        !(pWi->flags & NV_WORK_ITEM_FLAGS_DONT_FREE_DATA))
+    if ((pWi->pData != NULL) && !(pWi->flags.bDontFreeParams))
     {
         portMemFree(pWi->pData);
     }
@@ -1327,7 +1330,7 @@ RmDmabufVerifyMemHandle(
     }
 
     // Check if hMemory belongs to the same pGpu
-    if ((pMemDesc->pGpu != pGpu) &&
+    if ((pMemDesc->pGpu != pGpu) ||
         (pSrcMemory->pGpu != pGpu))
     {
         return NV_ERR_INVALID_OBJECT_PARENT;
@@ -1342,7 +1345,7 @@ RmDmabufVerifyMemHandle(
 
     // Only supported for vidmem and sysmem(only for 0FB) handles
     if ((memdescGetAddressSpace(pMemDesc) != ADDR_FBMEM) &&
-        (!pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB)))
+        (!pGpu->pGpuArch->bGpuArchIsZeroFb))
     {
         return NV_ERR_INVALID_ARGUMENT;
     }
@@ -1453,7 +1456,7 @@ RmDmabufPutClientAndDevice(
     NV_ASSERT_OK(kmigmgrDecRefCount(pKernelMIGGpuInstance->pShare));
 }
 
-static NV_STATUS RmP2PDmaMapPagesCoherent(
+static NV_STATUS RmP2PDmaMapPages(
     nv_dma_device_t *peer,
     NvU64            pageSize,
     NvU32            pageCount,
@@ -2173,7 +2176,7 @@ static NV_STATUS RmCreateMmapContextLocked(
     RsClient *pClient = staticCast(pRmClient, RsClient);
     KernelMemorySystem *pKernelMemorySystem = NULL;
     NvBool bCoherentAtsCpuOffset = NV_FALSE;
-    NvBool bSriovHostCoherentFbOffset = NV_FALSE;
+    NvBool bHostCoherentFbOffset = NV_FALSE;
     nv_state_t *pNv = NULL;
     NvU64 addr = (NvU64)address;
     NvU32 prot = 0;
@@ -2230,9 +2233,9 @@ static NV_STATUS RmCreateMmapContextLocked(
     {
         pNv = NV_GET_NV_STATE(pGpu);
         pKernelMemorySystem = GPU_GET_KERNEL_MEMORY_SYSTEM(pGpu);
-        bCoherentAtsCpuOffset = IS_COHERENT_CPU_ATS_OFFSET(pKernelMemorySystem, addr, size);
-        bSriovHostCoherentFbOffset = os_is_vgx_hyper() &&
-            IS_COHERENT_FB_OFFSET(pKernelMemorySystem, addr, size);
+        bCoherentAtsCpuOffset = IS_COHERENT_CPU_ATS_OFFSET(pGpu, pKernelMemorySystem, addr, size);
+        bHostCoherentFbOffset = !bCoherentAtsCpuOffset &&
+            IS_COHERENT_FB_OFFSET(pGpu, pKernelMemorySystem, addr, size);
     }
     //
     // If no device is given, or the address isn't in the given device's BARs,
@@ -2242,7 +2245,7 @@ static NV_STATUS RmCreateMmapContextLocked(
     if ((pNv == NULL) ||
         (!IS_REG_OFFSET(pNv, addr, size) &&
          !IS_FB_OFFSET(pNv, addr, size) &&
-         !(bCoherentAtsCpuOffset || bSriovHostCoherentFbOffset) &&
+         !(bCoherentAtsCpuOffset || bHostCoherentFbOffset) &&
          !IS_IMEM_OFFSET(pNv, addr, size)))
     {
         pNv = nv_get_ctl_state();
@@ -2272,7 +2275,7 @@ static NV_STATUS RmCreateMmapContextLocked(
                 goto done;
             }
         }
-        else if (bSriovHostCoherentFbOffset)
+        else if (bHostCoherentFbOffset)
         {
             status = RmGetMmapPteArray(pKernelMemorySystem, pClient, hMemory, nvuap);
             if (status != NV_OK)
@@ -2283,26 +2286,12 @@ static NV_STATUS RmCreateMmapContextLocked(
             //
             // nvuap->page_array(allocated in RmGetMmapPteArray) is not assigned
             // to nvamc->page_array if onlining status is false(which is the case with
-            // bSriovHostCoherentFbOffset) and so doesn't get freed if not done here.
+            // bHostCoherentFbOffset) and so doesn't get freed if not done here.
             // The call to RmGetMmapPteArray is for getting the contig and num
             // pages of the allocation.
             //
             os_free_mem(nvuap->page_array);
             nvuap->page_array = NULL;
-
-            //
-            // This path is taken in the case of self-hosted SRIOV host where
-            // the coherent GPU memory is not onlined but the CPU mapping to
-            // the coherent GPU memory is done via C2C(instead of BAR1) and so
-            // only contig can be supported for now.
-            //
-            if (!nvuap->contig && (nvuap->num_pages > 1))
-            {
-                NV_PRINTF(LEVEL_ERROR, "Mapping of Non-contig allocation for "
-                          "not onlined coherent GPU memory not supported\n");
-                status = NV_ERR_NOT_SUPPORTED;
-                goto done;
-            }
         }
 
         NV_ASSERT_OK_OR_GOTO(status, RmSetUserMapAccessRange(nvuap), done);
@@ -2431,8 +2420,10 @@ static NV_STATUS RmGetAllocPrivate(
     bPeerIoMem = memdescGetFlag(pMemDesc, MEMDESC_FLAGS_PEER_IO_MEM);
 
     if (!(pMemDesc->Allocated || bPeerIoMem ||
-        memdescGetFlag(pMemDesc, MEMDESC_FLAGS_ALLOC_FROM_SCANOUT_CARVEOUT)))
+          memdescIsCarveoutMemory(pMemDesc) ||
+          (memdescGetFlag(pMemDesc, MEMDESC_FLAGS_ALLOW_EXT_SYSMEM_USER_CPU_MAPPING))))
     {
+        NV_PRINTF(LEVEL_ERROR, "Mmap is not allowed\n");
         rmStatus = NV_ERR_OBJECT_NOT_FOUND;
         goto done;
     }
@@ -2584,69 +2575,6 @@ void NV_API_CALL rm_destroy_event_locks(
 
     if (pNv && pNv->event_spinlock)
         portSyncSpinlockDestroy(pNv->event_spinlock);
-
-    NV_EXIT_RM_RUNTIME(sp,fp);
-}
-
-void NV_API_CALL rm_get_vbios_version(
-    nvidia_stack_t *sp,
-    nv_state_t *pNv,
-    char *vbiosString
-)
-{
-    void   *fp;
-    NV2080_CTRL_BIOS_GET_INFO_V2_PARAMS *params;
-    RM_API *pRmApi;
-    THREAD_STATE_NODE threadState;
-    const size_t vbiosStringLen = 15; // "xx.xx.xx.xx.xx"
-
-    os_snprintf(vbiosString, vbiosStringLen, "??.??.??.??.??");
-
-    NV_ENTER_RM_RUNTIME(sp,fp);
-
-    params = portMemAllocNonPaged(sizeof(*params));
-    if (params == NULL)
-    {
-        NV_EXIT_RM_RUNTIME(sp,fp);
-        return;
-    }
-
-    portMemSet(params, 0, sizeof(*params));
-
-    params->biosInfoList[0].index = NV2080_CTRL_BIOS_INFO_INDEX_REVISION;
-    params->biosInfoList[1].index = NV2080_CTRL_BIOS_INFO_INDEX_OEM_REVISION;
-    params->biosInfoListSize = 2;
-
-    pRmApi = RmUnixRmApiPrologue(pNv, &threadState, RM_LOCK_MODULES_VBIOS);
-    if (pRmApi != NULL)
-    {
-        NV_STATUS rmStatus;
-
-        rmStatus = pRmApi->Control(pRmApi,
-                                   pNv->rmapi.hClient,
-                                   pNv->rmapi.hSubDevice,
-                                   NV2080_CTRL_CMD_BIOS_GET_INFO_V2,
-                                   params,
-                                   sizeof(*params));
-
-        if (rmStatus == NV_OK)
-        {
-            const NvU32 biosRevision = params->biosInfoList[0].data;
-            const NvU32 biosOEMRevision = params->biosInfoList[1].data;
-
-            os_snprintf(vbiosString, vbiosStringLen,
-                        "%02x.%02x.%02x.%02x.%02x",
-                        (biosRevision & 0xff000000) >> 24,
-                        (biosRevision & 0x00ff0000) >> 16,
-                        (biosRevision & 0x0000ff00) >>  8,
-                        (biosRevision & 0x000000ff) >>  0,
-                        biosOEMRevision);
-        }
-
-        RmUnixRmApiEpilogue(pNv, &threadState);
-    }
-
-    portMemFree(params);
 
     NV_EXIT_RM_RUNTIME(sp,fp);
 }
@@ -3291,11 +3219,12 @@ static NV_STATUS RmRunNanoTimerCallback(
     // GPU timer events are also handled in same mammer allowing us to have same functionality
     // for callback functions.
     //
-    status = osQueueWorkItemWithFlags(pGpu,
-                                      _tmrEventServiceTimerWorkItem,
-                                      pTmrEvent,
-                                      (OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_DEVICE |
-                                       OS_QUEUE_WORKITEM_FLAGS_DONT_FREE_PARAMS));
+    status = osQueueWorkItem(pGpu,
+                             _tmrEventServiceTimerWorkItem,
+                             pTmrEvent,
+                             (OsQueueWorkItemFlags){
+                               .bLockGpuGroupDevice = NV_TRUE,
+                               .bDontFreeParams = NV_TRUE});
     if (status != NV_OK)
     {
         NV_PRINTF(LEVEL_ERROR,"Queuing workitem for timer event failed with status :0x%x\n", status);
@@ -4066,7 +3995,7 @@ void RmI2cAddGpuPorts(nv_state_t * pNv)
     OBJGPU    *pGpu = NV_GET_NV_PRIV_PGPU(pNv);
     NV0073_CTRL_SYSTEM_GET_SUPPORTED_PARAMS systemGetSupportedParams = { 0 };
 
-    if (IS_VIRTUAL(pGpu))
+    if (IS_VIRTUAL(pGpu) || NV_IS_SOC_DISPLAY_DEVICE(pNv))
         return;
 
     // Make displayId as Invalid.
@@ -4320,9 +4249,24 @@ void NV_API_CALL rm_power_source_change_event(
 )
 {
     THREAD_STATE_NODE threadState;
-    void       *fp;
-    nv_state_t *nv;
-    NV_STATUS rmStatus = NV_OK;
+    void           *fp;
+    nv_state_t     *nv;
+    static NvBool   first_event_seen = NV_FALSE;
+    static NvU32    last_event_val = 0;
+    NV_STATUS       rmStatus = NV_OK;
+
+    // Some systems generate spurious power source changed ACPI events.
+    // Before entering the PM runtime and waking the GPU, see if the power
+    // state has actually changed. If not, return without waking the GPU.
+    if ((first_event_seen != NV_FALSE) && (last_event_val == event_val))
+    {
+        return;
+    }
+    else
+    {
+        first_event_seen = NV_TRUE;
+        last_event_val = event_val;
+    }
 
     NV_ENTER_RM_RUNTIME(sp,fp);
     threadStateInit(&threadState, THREAD_STATE_FLAGS_NONE);
@@ -4419,60 +4363,77 @@ NV_STATUS NV_API_CALL rm_p2p_dma_map_pages(
     THREAD_STATE_NODE threadState;
     NV_STATUS rmStatus;
     void *fp;
+    NvU32 i, j;
+    OBJGPU *pGpu;
+    nv_state_t *pNv;
 
     if (ppPriv == NULL)
-    {
         return NV_ERR_INVALID_ARGUMENT;
-    }
 
     *ppPriv = NULL;
 
     NV_ENTER_RM_RUNTIME(sp,fp);
     threadStateInit(&threadState, THREAD_STATE_FLAGS_NONE);
 
-    if ((rmStatus = rmapiLockAcquire(API_LOCK_FLAGS_NONE, RM_LOCK_MODULES_P2P)) == NV_OK)
+    rmStatus = rmapiLockAcquire(API_LOCK_FLAGS_NONE, RM_LOCK_MODULES_P2P);
+    if (rmStatus != NV_OK)
+        goto done;
+
+    pGpu = gpumgrGetGpuFromUuid(pGpuUuid,
+                DRF_DEF(2080_GPU_CMD, _GPU_GET_GID_FLAGS, _TYPE, _SHA1) |
+                DRF_DEF(2080_GPU_CMD, _GPU_GET_GID_FLAGS, _FORMAT, _BINARY));
+    if (pGpu == NULL)
     {
-        OBJGPU *pGpu = gpumgrGetGpuFromUuid(pGpuUuid,
-            DRF_DEF(2080_GPU_CMD, _GPU_GET_GID_FLAGS, _TYPE, _SHA1) |
-            DRF_DEF(2080_GPU_CMD, _GPU_GET_GID_FLAGS, _FORMAT, _BINARY));
-        if (pGpu == NULL)
+        rmStatus = NV_ERR_INVALID_ARGUMENT;
+        goto unlock;
+    }
+
+    pNv = NV_GET_NV_STATE(pGpu);
+
+    if (pNv->mem_has_struct_page)
+    {
+        rmStatus = RmP2PDmaMapPages(peer, pageSize, pageCount,
+                                    pDmaAddresses, ppPriv);
+        goto unlock;
+    }
+
+    // Check if the topology is supported for third party p2p
+    if (!nv_grdma_pci_topology_supported(pNv, peer))
+    {
+        rmStatus = NV_ERR_NOT_SUPPORTED;
+        goto unlock;
+    }
+
+    for (i = 0; i < pageCount; i++)
+    {
+        if (pNv->coherent)
         {
-            rmStatus = NV_ERR_INVALID_ARGUMENT;
+            // Map C2C PFNs for coherent platforms
+            rmStatus = nv_dma_map_non_pci_peer(peer, pageSize / os_page_size,
+                                               &pDmaAddresses[i]);
         }
         else
         {
-            NvU32 i;
-
-            if (pGpu->getProperty(pGpu, PDB_PROP_GPU_COHERENT_CPU_MAPPING))
-            {
-                rmStatus = RmP2PDmaMapPagesCoherent(peer, pageSize, pageCount,
-                                                    pDmaAddresses, ppPriv);
-            }
-            else
-            {
-                nv_state_t *nv = NV_GET_NV_STATE(pGpu);
-                for (i = 0; i < pageCount; i++)
-                {
-                    // Peer mappings through this API are always via BAR1
-                    rmStatus = nv_dma_map_peer(peer, nv->dma_dev, 0x1,
-                                               pageSize / os_page_size,
-                                               &pDmaAddresses[i]);
-                    if ((rmStatus != NV_OK) && (i > 0))
-                    {
-                        NvU32 j;
-                        for (j = i - 1; j < pageCount; j--)
-                        {
-                            nv_dma_unmap_peer(peer, pageSize / os_page_size,
-                                              pDmaAddresses[j]);
-                        }
-                    }
-                }
-            }
+            // Map BAR1 PFNs for non-coherent platforms
+            rmStatus = nv_dma_map_peer(peer, pNv->dma_dev, 0x1,
+                                       pageSize / os_page_size,
+                                       &pDmaAddresses[i]);
         }
-
-        rmapiLockRelease();
+        if (rmStatus != NV_OK)
+        {
+            for (j = 0; j < i; j++)
+            {
+                nv_dma_unmap_peer(peer, pageSize / os_page_size,
+                                  pDmaAddresses[j]);
+            }
+            goto unlock;
+        }
     }
 
+unlock:
+    rmapiLockRelease();
+
+done:
     threadStateFree(&threadState, THREAD_STATE_FLAGS_NONE);
     NV_EXIT_RM_RUNTIME(sp,fp);
 
@@ -4544,7 +4505,8 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages_persistent(
     NvBool          bForcePcie,
     void           *pPlatformData,
     void           *pGpuInfo,
-    void          **ppMigInfo
+    void          **ppMigInfo,
+    NvBool         *pMemCpuCacheable
 )
 {
     THREAD_STATE_NODE threadState;
@@ -4562,6 +4524,7 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages_persistent(
                                            p2pObject,
                                            pPhysicalAddresses,
                                            pEntries,
+                                           pMemCpuCacheable,
                                            bForcePcie,
                                            pPlatformData,
                                            pGpuInfo,
@@ -4587,7 +4550,8 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages(
     NvU32      *pRreqMbH,
     NvU32      *pEntries,
     NvU8      **ppGpuUuid,
-    void       *pPlatformData
+    void       *pPlatformData,
+    NvBool     *pMemCpuCacheable
 )
 {
     THREAD_STATE_NODE threadState;
@@ -4609,6 +4573,7 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages(
                                                             pWreqMbH,
                                                             pRreqMbH,
                                                             pEntries,
+                                                            pMemCpuCacheable,
                                                             &pGpu,
                                                             pPlatformData);
         if (rmStatus == NV_OK)
@@ -4620,8 +4585,8 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages(
             if (pGid == NULL)
             {
                 NV_ASSERT_OK(RmP2PPutPages(p2pToken, vaSpaceToken,
-                                               gpuVirtualAddress,
-                                               pPlatformData));
+                                           gpuVirtualAddress,
+                                           pPlatformData));
                 rmStatus = NV_ERR_GENERIC;
             }
             else
@@ -4630,6 +4595,8 @@ NV_STATUS NV_API_CALL rm_p2p_get_pages(
                 if (rmStatus == NV_OK)
                     os_mem_copy(*ppGpuUuid, pGid, GPU_UUID_LEN);
             }
+
+            *pMemCpuCacheable = nv->coherent;
         }
 
         // UNLOCK: release API lock
@@ -4882,68 +4849,6 @@ void NV_API_CALL rm_set_rm_firmware_requested(
     // Check if we want firmware logs
     if (nv->request_firmware)
         rm_set_firmware_logs(sp, nv);
-}
-
-//
-// This function will be called by nv_procfs_read_gpu_info().
-// nv_procfs_read_gpu_info() will not print the 'GPU Firmware:' field at
-// all if the 'version' string is empty.
-//
-// If GSP is enabled (firmware was requested), this function needs to return
-// the firmware version or "NA" in case of any errors.
-//
-// If GSP is not enabled (firmware was not requested), this function needs to
-// return the empty string, regardless of error cases.
-//
-void NV_API_CALL rm_get_firmware_version(
-    nvidia_stack_t *sp,
-    nv_state_t *nv,
-    char *version,
-    NvLength version_length
-)
-{
-    NV2080_CTRL_GSP_GET_FEATURES_PARAMS params = { 0 };
-    RM_API            *pRmApi;
-    THREAD_STATE_NODE  threadState;
-    NV_STATUS          rmStatus = NV_OK;
-    void              *fp;
-
-    NV_ENTER_RM_RUNTIME(sp,fp);
-
-    pRmApi = RmUnixRmApiPrologue(nv, &threadState, RM_LOCK_MODULES_GPU);
-    if (pRmApi != NULL)
-    {
-        rmStatus = pRmApi->Control(pRmApi,
-                                   nv->rmapi.hClient,
-                                   nv->rmapi.hSubDevice,
-                                   NV2080_CTRL_CMD_GSP_GET_FEATURES,
-                                   &params,
-                                   sizeof(params));
-
-        RmUnixRmApiEpilogue(nv, &threadState);
-    }
-    else
-    {
-        rmStatus = NV_ERR_INVALID_STATE;
-    }
-
-    if (rmStatus != NV_OK)
-    {
-        if (RMCFG_FEATURE_GSP_CLIENT_RM && nv->request_firmware)
-        {
-            const char *pTmpString = "N/A";
-            portStringCopy(version, version_length, pTmpString, portStringLength(pTmpString) + 1);
-        }
-        NV_PRINTF(LEVEL_INFO,
-                  "%s: Failed to query gpu build versions, status=0x%x\n",
-                  __FUNCTION__,
-                  rmStatus);
-        goto finish;
-    }
-    portMemCopy(version, version_length, params.firmwareVersion, sizeof(params.firmwareVersion));
-
-finish:
-    NV_EXIT_RM_RUNTIME(sp,fp);
 }
 
 //
@@ -5455,18 +5360,22 @@ NvBool NV_API_CALL rm_disable_iomap_wc(void)
 // Must be called with API lock and GPU lock held.
 //
 NV_STATUS NV_API_CALL rm_dma_buf_dup_mem_handle(
-    nvidia_stack_t  *sp,
-    nv_state_t      *nv,
-    NvHandle         hSrcClient,
-    NvHandle         hDstClient,
-    NvHandle         hDevice,
-    NvHandle         hSubdevice,
-    void            *pGpuInstanceInfo,
-    NvHandle         hMemory,
-    NvU64            offset,
-    NvU64            size,
-    NvHandle        *phMemoryDuped,
-    void           **ppMemInfo
+    nvidia_stack_t   *sp,
+    nv_state_t       *nv,
+    NvHandle          hSrcClient,
+    NvHandle          hDstClient,
+    NvHandle          hDevice,
+    NvHandle          hSubdevice,
+    void             *pGpuInstanceInfo,
+    NvHandle          hMemory,
+    NvU64             offset,
+    NvU64             size,
+    NvHandle         *phMemoryDuped,
+    void            **ppMemInfo,
+    NvBool           *pbCanMmap,
+    NvU32            *pCacheType,
+    NvBool           *pbReadOnlyMem,
+    nv_memory_type_t *pMemoryType
 )
 {
     MEMORY_DESCRIPTOR *pMemDesc;
@@ -5521,6 +5430,27 @@ NV_STATUS NV_API_CALL rm_dma_buf_dup_mem_handle(
             }
         }
         *ppMemInfo = (void *) pMemDesc;
+
+        *pCacheType    = memdescGetCpuCacheAttrib(pMemDesc);
+        *pbReadOnlyMem = memdescGetFlag(pMemDesc, MEMDESC_FLAGS_USER_READ_ONLY);
+
+        if (memdescGetFlag(pMemDesc, MEMDESC_FLAGS_PEER_IO_MEM))
+        {
+            *pMemoryType = NV_MEMORY_TYPE_DEVICE_MMIO;
+        }
+        else if (memdescGetAddressSpace(pMemDesc) == ADDR_SYSMEM)
+        {
+            *pMemoryType = NV_MEMORY_TYPE_SYSTEM;
+        }
+        else
+        {
+            // TODO: Assume NV_MEMORY_TYPE_FRAMEBUFFER is for now.
+            // Add Proper handling for NV_MEMORY_TYPE_REGISTERS.
+            *pMemoryType = NV_MEMORY_TYPE_FRAMEBUFFER;
+        }
+
+        // mmap is allowed only for 0FB chips (iGPU)
+        *pbCanMmap = pGpu->pGpuArch->bGpuArchIsZeroFb;
     }
 
     threadStateFree(&threadState, THREAD_STATE_FLAGS_NONE);
@@ -5598,11 +5528,20 @@ NV_STATUS NV_API_CALL rm_dma_buf_map_mem_handle(
     pMemDesc = (MEMORY_DESCRIPTOR *) pMemInfo;
 
     if (((pGpu->getProperty(pGpu, PDB_PROP_GPU_COHERENT_CPU_MAPPING)) ||
-        (pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB))) &&
+        (pGpu->pGpuArch->bGpuArchIsZeroFb)) &&
         (mappingType == NV_DMABUF_EXPORT_MAPPING_TYPE_DEFAULT))
     {
         KernelMemorySystem *pKernelMemorySystem = GPU_GET_KERNEL_MEMORY_SYSTEM(pGpu);
         NvBool contiguity = memdescCheckContiguity(pMemDesc, AT_CPU);
+
+        // On localized allocations over C2C/nvlink mappings, RDMA is not supported
+        if (memdescGetFlag(pMemDesc, MEMDESC_FLAGS_ALLOC_AS_LOCALIZED))
+        {
+            NV_PRINTF(LEVEL_ERROR, "RDMA is not supported for localized memory"
+                                  " over coherent mappings\n");
+            rmStatus = NV_ERR_NOT_SUPPORTED;
+            goto Done;
+        }
 
         if (contiguity)
         {
@@ -5729,7 +5668,7 @@ void NV_API_CALL rm_dma_buf_unmap_mem_handle(
     pGpu = NV_GET_NV_PRIV_PGPU(nv);
 
     if ((pGpu->getProperty(pGpu, PDB_PROP_GPU_COHERENT_CPU_MAPPING) ||
-        pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB)) &&
+        pGpu->pGpuArch->bGpuArchIsZeroFb) &&
         (mappingType == NV_DMABUF_EXPORT_MAPPING_TYPE_DEFAULT))
     {
         os_free_mem(memArea.pRanges);
@@ -5782,7 +5721,8 @@ NV_STATUS NV_API_CALL rm_dma_buf_get_client_and_device(
     NvHandle       *phDevice,
     NvHandle       *phSubdevice,
     void          **ppGpuInstanceInfo,
-    NvBool         *pbStaticPhysAddrs
+    NvBool         *pbStaticPhysAddrs,
+    NvBool         *pbAcquireReleaseAllGpuLockOnDup
 )
 {
     THREAD_STATE_NODE threadState;
@@ -5807,10 +5747,12 @@ NV_STATUS NV_API_CALL rm_dma_buf_get_client_and_device(
             if (rmStatus == NV_OK)
             {
                 *pbStaticPhysAddrs = ((pGpu->getProperty(pGpu, PDB_PROP_GPU_COHERENT_CPU_MAPPING) ||
-                                       pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB)) &&
+                                       pGpu->pGpuArch->bGpuArchIsZeroFb) &&
                                       (mappingType == NV_DMABUF_EXPORT_MAPPING_TYPE_DEFAULT)) ||
                                       kbusIsStaticBar1Enabled(pGpu, GPU_GET_KERNEL_BUS(pGpu));
             }
+
+            *pbAcquireReleaseAllGpuLockOnDup = pGpu->pGpuArch->bGpuArchIsZeroFb;
 
             rmDeviceGpuLocksRelease(pGpu, GPUS_LOCK_FLAGS_NONE, NULL);
         }
@@ -5986,7 +5928,8 @@ NvBool NV_API_CALL rm_wait_for_bar_firewall(
     NvU8  bus,
     NvU8  device,
     NvU8  function,
-    NvU16 devId
+    NvU16 devId,
+    NvU16 subsystemId
 )
 {
     NvBool ret;
@@ -5994,9 +5937,82 @@ NvBool NV_API_CALL rm_wait_for_bar_firewall(
 
     // no state set up yet for threadstate or RM locks
     NV_ENTER_RM_RUNTIME(sp,fp);
-    ret = gpumgrWaitForBarFirewall(domain, bus, device, function, devId);
+    ret = gpumgrWaitForBarFirewall(domain, bus, device, function, devId, subsystemId);
     NV_EXIT_RM_RUNTIME(sp,fp);
 
     return ret;
 }
 
+static NvU32 devfreq_clk_to_domain(
+    TEGRASOC_DEVFREQ_CLK devfreqClk
+)
+{
+    NvU32 clkDomain = NV2080_CTRL_CLK_DOMAIN_TEGRA_UNDEFINED;
+    switch (devfreqClk)
+    {
+        case TEGRASOC_DEVFREQ_CLK_GPC:
+            clkDomain = NV2080_CTRL_CLK_DOMAIN_TEGRA_GPCCLK;
+            break;
+
+        case TEGRASOC_DEVFREQ_CLK_NVD:
+            clkDomain = NV2080_CTRL_CLK_DOMAIN_TEGRA_NVDCLK;
+            break;
+
+        default:
+            break;
+    }
+
+    return clkDomain;
+}
+
+NV_STATUS NV_API_CALL rm_pmu_perfmon_get_load(
+    nvidia_stack_t *sp,
+    nv_state_t *nv,
+    NvU32 *load,
+    TEGRASOC_DEVFREQ_CLK devfreqClk
+)
+{
+    NV2080_CTRL_PERF_GET_TEGRA_PERFMON_SAMPLE_PARAMS params = { 0 };
+    NvU32 clkDomain = devfreq_clk_to_domain(devfreqClk);
+    RM_API *pRmApi;
+    NV_STATUS status;
+    void *fp;
+
+    if (clkDomain == NV2080_CTRL_CLK_DOMAIN_TEGRA_UNDEFINED)
+    {
+        return NV_ERR_INVALID_ARGUMENT;
+    }
+
+    NV_ENTER_RM_RUNTIME(sp, fp);
+
+    if (rmapiLockAcquire(API_LOCK_FLAGS_NONE, RM_LOCK_MODULES_OSAPI) == NV_OK)
+    {
+        pRmApi = rmapiGetInterface(RMAPI_API_LOCK_INTERNAL);
+        if (pRmApi == NULL)
+        {
+            status = NV_ERR_INVALID_STATE;
+            rmapiLockRelease();
+            goto rm_pmu_perfmon_get_load_exit;
+        }
+
+        params.clkDomain = clkDomain;
+        status = pRmApi->Control(pRmApi, nv->rmapi.hClient, nv->rmapi.hSubDevice,
+                                 NV2080_CTRL_CMD_PERF_GET_TEGRA_PERFMON_SAMPLE,
+                                 &params, sizeof(params));
+        if (status == NV_OK)
+        {
+            *load = params.clkPercentBusy;
+        }
+
+        rmapiLockRelease();
+    }
+    else
+    {
+        status = NV_ERR_INVALID_STATE;
+    }
+
+rm_pmu_perfmon_get_load_exit:
+    NV_EXIT_RM_RUNTIME(sp, fp);
+
+    return status;
+}

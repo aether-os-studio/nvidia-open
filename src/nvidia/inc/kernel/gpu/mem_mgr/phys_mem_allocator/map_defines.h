@@ -60,6 +60,8 @@ extern "C" {
 #define PMA_LOCALIZED_MEMORY_ALLOC_STRIDE   (32ULL * 1024 * 1024)
 #define PMA_LOCALIZED_MEMORY_RESERVE_SIZE   (2 * PMA_LOCALIZED_MEMORY_ALLOC_STRIDE)
 
+// Same as NVOS32_ATTR2_ENABLE_LOCALIZED_MEMORY_UGPU_COUNT
+#define PMA_MAX_LOCALIZED_REGION_COUNT      2
 
 typedef NvU32 PMA_PAGESTATUS;
 
@@ -114,6 +116,9 @@ typedef struct _PMA_STATS
     NvU64 numFreeFramesProtected;    // PMA-wide free 64KB frame count in protected memory
     NvU64 numFree2mbPagesProtected;  // PMA-wide free 2MB pages count in protected memory
 #endif // !defined(NVWATCH)
+    NvU64 num2mbPagesLocalizable[PMA_MAX_LOCALIZED_REGION_COUNT];  // PMA-wide free 64KB per-uGPU frame count
+    NvU64 numFreeFramesLocalizable[PMA_MAX_LOCALIZED_REGION_COUNT];  // PMA-wide free 64KB per-uGPU frame count
+    NvU64 numFree2mbPagesLocalizable[PMA_MAX_LOCALIZED_REGION_COUNT];  // PMA-wide free 64KB per-uGPU frame count
 } PMA_STATS;
 
 // Stores blacklisting information passed in from heap layer

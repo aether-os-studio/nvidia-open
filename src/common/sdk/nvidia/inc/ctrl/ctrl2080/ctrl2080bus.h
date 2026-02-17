@@ -1045,56 +1045,6 @@ typedef struct NV2080_CTRL_BUS_CLEAR_PEX_UTIL_COUNTERS_PARAMS {
     NvU32 pexCounterMask;
 } NV2080_CTRL_BUS_CLEAR_PEX_UTIL_COUNTERS_PARAMS;
 
-#define NV2080_CTRL_CMD_BUS_GET_BFD (0x20801821) /* finn: Evaluated from "(FINN_NV20_SUBDEVICE_0_BUS_INTERFACE_ID << 8) | NV2080_CTRL_BUS_GET_BFD_PARAMSARR_MESSAGE_ID" */
-
-typedef struct NV2080_CTRL_BUS_GET_BFD_PARAMS {
-    NvBool valid;
-    NvU16  deviceID;
-    NvU16  vendorID;
-    NvU32  domain;
-    NvU16  bus;
-    NvU16  device;
-    NvU8   function;
-} NV2080_CTRL_BUS_GET_BFD_PARAMS;
-
-#define NV2080_CTRL_BUS_GET_BFD_PARAMSARR_MESSAGE_ID (0x21U)
-
-typedef struct NV2080_CTRL_BUS_GET_BFD_PARAMSARR {
-    NV2080_CTRL_BUS_GET_BFD_PARAMS params[32];
-} NV2080_CTRL_BUS_GET_BFD_PARAMSARR;
-
-/*
- * NV2080_CTRL_CMD_BUS_GET_ASPM_DISABLE_FLAGS
- *  This command gets the following mentioned PDB Properties
- * 
- * aspmDisableFlags[] 
- *  NvBool array stores each of the properties' state. the array size can
- *  be increased as per requirement.
- *
- * NOTE: When adding more properties, increment NV2080_CTRL_ASPM_DISABLE_FLAGS_MAX_FLAGS.
- */
-
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_L1_MASK_REGKEY_OVERRIDE                0x00000000
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_OS_RM_MAKES_POLICY_DECISIONS           0x00000001
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_GPU_BEHIND_BRIDGE                      0x00000002
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_GPU_UPSTREAM_PORT_L1_UNSUPPORTED       0x00000003
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_GPU_UPSTREAM_PORT_L1_POR_SUPPORTED     0x00000004
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_GPU_UPSTREAM_PORT_L1_POR_MOBILE_ONLY   0x00000005
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_CL_ASPM_L1_CHIPSET_DISABLED            0x00000006
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_CL_ASPM_L1_CHIPSET_ENABLED_MOBILE_ONLY 0x00000007
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_BIF_ENABLE_ASPM_DT_L1                  0x00000008
-//append properties here
-
-#define NV2080_CTRL_ASPM_DISABLE_FLAGS_MAX_FLAGS                              9
-
-#define NV2080_CTRL_CMD_BUS_GET_ASPM_DISABLE_FLAGS                            (0x20801822) /* finn: Evaluated from "(FINN_NV20_SUBDEVICE_0_BUS_INTERFACE_ID << 8) | NV2080_CTRL_BUS_GET_ASPM_DISABLE_FLAGS_PARAMS_MESSAGE_ID" */
-
-#define NV2080_CTRL_BUS_GET_ASPM_DISABLE_FLAGS_PARAMS_MESSAGE_ID (0x22U)
-
-typedef struct NV2080_CTRL_BUS_GET_ASPM_DISABLE_FLAGS_PARAMS {
-    NvBool aspmDisableFlags[NV2080_CTRL_ASPM_DISABLE_FLAGS_MAX_FLAGS];
-} NV2080_CTRL_BUS_GET_ASPM_DISABLE_FLAGS_PARAMS;
-
 #define NV2080_CTRL_CMD_BUS_CONTROL_PUBLIC_ASPM_BITS (0x20801824) /* finn: Evaluated from "(FINN_NV20_SUBDEVICE_0_BUS_INTERFACE_ID << 8) | NV2080_CTRL_CMD_BUS_CONTROL_PUBLIC_ASPM_BITS_PARAMS_MESSAGE_ID" */
 
 #define NV2080_CTRL_CMD_BUS_CONTROL_PUBLIC_ASPM_BITS_PARAMS_MESSAGE_ID (0x24U)
@@ -1611,6 +1561,8 @@ typedef struct NV2080_CTRL_CMD_BUS_GET_PCIE_CPL_ATOMICS_CAPS_PARAMS {
  *       Average exit latency for CL3 state.
  *   cl3PstateSupportMask[OUT]
         Pstate Support Mask for CL3 state
+ *   cl3IdleThresholdUs[OUT]
+ *       Get idle threshold for CL3 state.
  *   cl4EntryCount[OUT]
  *       Count of the number of times CL4 state has been entered.
  *   cl4ResidentTimeUs[OUT]
@@ -1621,6 +1573,8 @@ typedef struct NV2080_CTRL_CMD_BUS_GET_PCIE_CPL_ATOMICS_CAPS_PARAMS {
  *       Average exit latency for CL4 state.
  *   cl4PstateSupportMask[OUT]
         Pstate Support Mask for CL4 state
+ *   cl4IdleThresholdUs[OUT]
+ *       Get idle threshold for CL4 state.
  *   localPowerState[OUT]
  *       Power state of the local end of the C2C link.
  *       Valid values are :
@@ -1671,6 +1625,8 @@ typedef struct NV2080_CTRL_CMD_BUS_GET_C2C_LPWR_STATS_PARAMS {
     NvU32  c2cLpwrStateAllowedMask;
     NvU32  localPowerState;
     NvU32  remotePowerState;
+    NvU32  cl3IdleThresholdUs;
+    NvU32  cl4IdleThresholdUs;
 } NV2080_CTRL_CMD_BUS_GET_C2C_LPWR_STATS_PARAMS;
 
 #define NV2080_CTRL_CMD_BUS_GET_C2C_STATE_FULL_POWER 0x0
@@ -1694,3 +1650,23 @@ typedef struct NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_STATE_VOTE_PARAMS {
     NvU32  c2cLpwrStateId;
     NvBool bAllowed;
 } NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_STATE_VOTE_PARAMS;
+
+
+/*
+ * NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD
+ *
+ * This command sets the idle threshold for C2C Lpwr States.
+ *   c2cLpwrStateId[IN]
+ *      C2C LowPower State Id : NV2080_CTRL_LPWR_C2C_STATE_ID_CLx
+ *   idleThresholdUs[in]
+ *      The Idle Threshold for the C2C Ctrl in Micro Seconds
+ */
+#define NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD (0x20801836) /* finn: Evaluated from "(FINN_NV20_SUBDEVICE_0_BUS_INTERFACE_ID << 8) | NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD_PARAMS_MESSAGE_ID" */
+
+#define NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD_PARAMS_MESSAGE_ID (0x36U)
+
+typedef struct NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD_PARAMS {
+    NvU32 c2cLpwrStateId;
+    NvU32 idleThresholdUs;
+} NV2080_CTRL_CMD_BUS_SET_C2C_LPWR_IDLE_THRESHOLD_PARAMS;
+

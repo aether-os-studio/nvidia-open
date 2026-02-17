@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -41,8 +41,9 @@ typedef struct GpuSharedDataMap {
     NvU64 lastPolledDataMask;
     NvU32 processId;
     NvU32 pollingRegistryOverride;
-    NvU32 pollingFrequencyMs;
-    NvBool bPollFrequencyOverridden;
+    NvU32 defaultPollingIntervalMs;
+    NvU32 pollingIntervalMs;
+    NvBool bPollIntervalOverridden;
 
     TMR_EVENT *pRusdRefreshTmrEvent;
 
@@ -72,6 +73,14 @@ void gpushareddataWriteFinish_INTERNAL(OBJGPU *pGpu, NvU64 offset);
 
 #define gpushareddataWriteFinish(pGpu, field) \
     gpushareddataWriteFinish_INTERNAL(pGpu, NV_OFFSETOF(NV00DE_SHARED_DATA, field))
+
+/*!
+ * @brief RUSD settings data
+ */
+typedef struct
+{
+    NvU64  permanentPolledDataMask;
+} GPU_DB_RUSD_SETTINGS;
 
 #endif /* GPU_SHARED_DATA_MAP_H */
 

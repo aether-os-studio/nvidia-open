@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1999-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1999-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -63,7 +63,7 @@ typedef struct nv_pm_state_s
 */
 typedef struct nv_work_item_s
 {
-    NvU32   flags;
+    OsQueueWorkItemFlags flags;
     NvU32   gpuInstance;
     union
     {
@@ -72,10 +72,6 @@ typedef struct nv_work_item_s
     } func;
     void *pData;
 } nv_work_item_t;
-
-#define NV_WORK_ITEM_FLAGS_NONE             0x0
-#define NV_WORK_ITEM_FLAGS_REQUIRES_GPU     0x1
-#define NV_WORK_ITEM_FLAGS_DONT_FREE_DATA   0x2
 
 #define INVALID_DISP_ID 0xFFFFFFFF
 #define MAX_DISP_ID_PER_ADAPTER 0x2

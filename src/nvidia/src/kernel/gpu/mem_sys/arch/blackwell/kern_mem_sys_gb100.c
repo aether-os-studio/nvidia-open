@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2020-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,9 +27,11 @@
 #include "gpu/mem_mgr/mem_desc.h"
 
 #include "published/blackwell/gb100/pri_nv_xal_ep.h"
-
-#include "published/blackwell/gb100/dev_top.h"
+#include "published/blackwell/gb100/dev_ltc_zb.h"
+#include "published/blackwell/gb100/dev_hshub.h"
 #include "published/blackwell/gb100/dev_hshub_base.h"
+#include "published/blackwell/gb100/dev_fuse_zb.h"
+#include "published/blackwell/gb100/hwproject.h"
 
 /*!
  * @brief Function used to return the HSHUB0 IoAperture
@@ -52,8 +54,6 @@ kmemsysInitHshub0Aperture_GB100
     IoAperture *pHshub0IoAperture = NULL;
     NV_STATUS status;
 
-// TODO Remove this hardcoded value by fixing bug 4313915
-#define NV_PFB_HSHUB0      0x00870fff:0x00870000
     hshub0PriBaseAddress = DRF_BASE(NV_PFB_HSHUB0);
     status = objCreate(&pHshub0IoAperture, pGpu, IoAperture,
                          pGpu->pIOApertures[DEVICE_INDEX_GPU], NULL, 0, 0,
@@ -91,11 +91,11 @@ kmemsysDestroyHshub0Aperture_GB100
  * @brief Validate the sysmemFlushBuffer val and assert
  *
  * @param[in] pGpu                OBJGPU pointer
- * @param[in[ pKernelMemorySystem KernelMemorySystem pointer
+ * @param[in] pKernelMemorySystem KernelMemorySystem pointer
  *
- * @returns void
+ * @returns NV_STATUS - NV_OK if sysmemFlushBuffer is valid otherwise NV_ERR_INVALID_STATE
  */
-void
+NV_STATUS
 kmemsysAssertSysmemFlushBufferValid_GB100
 (
     OBJGPU *pGpu,
@@ -107,31 +107,47 @@ kmemsysAssertSysmemFlushBufferValid_GB100
     NvU32       regHshubEgPcieFlushSysmemAddrValHi = 0;
     NvU32       regHshubEgPcieFlushSysmemAddrValLo = 0;
     IoAperture *pHshub0IoAperture = kmemsysInitHshub0Aperture_HAL(pGpu, pKernelMemorySystem);
+    NV_STATUS   status = NV_OK;
 
-    NV_ASSERT_OR_RETURN_VOID(pHshub0IoAperture != NULL);
+    NV_ASSERT_OR_RETURN(pHshub0IoAperture != NULL, NV_ERR_INVALID_POINTER);
 
     regHshubPcieFlushSysmemAddrValLo = REG_RD32(pHshub0IoAperture,
                                              NV_PFB_HSHUB_PCIE_FLUSH_SYSMEM_ADDR_LO);
     regHshubPcieFlushSysmemAddrValHi = REG_RD32(pHshub0IoAperture,
                                              NV_PFB_HSHUB_PCIE_FLUSH_SYSMEM_ADDR_HI);
 
-    NV_ASSERT((regHshubPcieFlushSysmemAddrValLo != 0) || (regHshubPcieFlushSysmemAddrValHi != 0));
+    if (regHshubPcieFlushSysmemAddrValLo == 0 && regHshubPcieFlushSysmemAddrValHi == 0)
+    {
+        status = NV_ERR_INVALID_STATE;
+        goto cleanup;
+    }
 
     regHshubEgPcieFlushSysmemAddrValLo = REG_RD32(pHshub0IoAperture,
                                                NV_PFB_HSHUB_EG_PCIE_FLUSH_SYSMEM_ADDR_LO);
     regHshubEgPcieFlushSysmemAddrValHi = REG_RD32(pHshub0IoAperture,
                                                NV_PFB_HSHUB_EG_PCIE_FLUSH_SYSMEM_ADDR_HI);
 
-    NV_ASSERT((regHshubEgPcieFlushSysmemAddrValLo != 0) || (regHshubEgPcieFlushSysmemAddrValHi != 0));
+    if (regHshubEgPcieFlushSysmemAddrValLo == 0 && regHshubEgPcieFlushSysmemAddrValHi == 0)
+    {
+        status = NV_ERR_INVALID_STATE;
+        goto cleanup;
+    }
 
     //
     // In addition to a non-zero address, both NV_PFB_HSHUB_PCIE_FLUSH_SYSMEM_ADDR_<> and 
     // NV_PFB_HSHUB_EG_PCIE_FLUSH_SYSMEM_ADDR_<> must program same value.
     //
-    NV_ASSERT((regHshubPcieFlushSysmemAddrValLo == regHshubEgPcieFlushSysmemAddrValLo) &&
-        (regHshubPcieFlushSysmemAddrValHi == regHshubEgPcieFlushSysmemAddrValHi));
+    if ((regHshubPcieFlushSysmemAddrValLo != regHshubEgPcieFlushSysmemAddrValLo) ||
+        (regHshubPcieFlushSysmemAddrValHi != regHshubEgPcieFlushSysmemAddrValHi))
+    {
+        status = NV_ERR_INVALID_STATE;
+        goto cleanup;
+    }
 
+cleanup:
     kmemsysDestroyHshub0Aperture_HAL(pGpu, pKernelMemorySystem, pHshub0IoAperture);
+    
+    return status;
 }
 
 /*!
@@ -216,4 +232,28 @@ kmemsysAssertFbAckTimeoutPending_GB100
 #else
     return NV_FALSE;
 #endif
+}
+
+NvBool
+kmemsysCheckReadoutEccEnablement_GB100
+(
+    OBJGPU *pGpu,
+    KernelMemorySystem *pKernelMemorySystem
+)
+{
+    NvU32 fuse = GPU_REG_RD32(pGpu, NV_FUSE0_PRI_BASE + NV_FUSE_ZB_FEATURE_READOUT);
+    return FLD_TEST_DRF(_FUSE_ZB, _FEATURE_READOUT, _ECC_DRAM, _ENABLED, fuse);
+}
+
+NvU32
+kmemsysGetL2EccDedCountRegAddr_GB100
+(
+    OBJGPU             *pGpu,
+    KernelMemorySystem *pKernelMemorySystem,
+    NvU32               fbpa,
+    NvU32               subp
+)
+{
+    return (NV_LTC_PRI_BASE + NV_PLTC_LTS0_L2_CACHE_ECC_UNCORRECTED_ERR_COUNT +
+            (fbpa * NV_LTC_PRI_STRIDE) + (subp * NV_LTS_PRI_STRIDE));
 }

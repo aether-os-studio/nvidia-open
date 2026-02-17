@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -119,7 +119,7 @@ subdeviceConstruct_IMPL
 
     NV_ASSERT_OK_OR_RETURN(gpuRegisterSubdevice(pGpu, pSubdevice));
 
-    if (IS_VIRTUAL(pGpu) || IS_GSP_CLIENT(pGpu))
+    if (IS_VIRTUAL(pGpu) || IS_FW_CLIENT(pGpu))
     {
         NV_RM_RPC_ALLOC_SUBDEVICE(pPrimaryGpu, pRsClient->hClient, pParentRef->hResource,
                               pResourceRef->hResource, NV20_SUBDEVICE_0,
@@ -176,6 +176,11 @@ subdeviceDestruct_IMPL
     OBJGPU                 *pGpu            = GPU_RES_GET_GPU(pSubdevice);
     NV_STATUS               status          = NV_OK;
 
+    if (pSubdevice == pGpu->pCachedSubdevice)
+    {
+        pGpu->pCachedSubdevice = NULL;
+    }
+
     if (pSubdevice->bGcoffDisallowed)
     {
         osClientGcoffDisallowRefcount(pGpu->pOsGpuInfo, NV_FALSE);
@@ -216,7 +221,7 @@ subdeviceDestruct_IMPL
     subdeviceUnsetGpuDebugMode(pSubdevice);
     subdeviceRestoreWatchdog(pSubdevice);
 
-    if (pResourceRef != NULL && (IS_VIRTUAL(pGpu) || IS_GSP_CLIENT(pGpu)))
+    if (pResourceRef != NULL && (IS_VIRTUAL(pGpu) || IS_FW_CLIENT(pGpu)))
     {
         NV_RM_RPC_FREE(pGpu, pRsClient->hClient,
                        pResourceRef->pParentRef->hResource,

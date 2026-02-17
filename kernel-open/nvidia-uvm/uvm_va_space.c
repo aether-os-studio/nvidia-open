@@ -103,9 +103,10 @@ static NV_STATUS register_gpu_peers(uvm_va_space_t *va_space, uvm_gpu_t *gpu)
         if (uvm_id_equal(other_gpu->id, gpu->id))
             continue;
 
-        // Enable NVLINK and SMC peers.
+        // Enable NVLINK, BAR1 and SMC peers.
         if (uvm_gpus_are_smc_peers(gpu, other_gpu) ||
-            uvm_parent_gpu_peer_link_type(gpu->parent, other_gpu->parent) >= UVM_GPU_LINK_NVLINK_1) {
+            (uvm_parent_gpu_peer_link_type(gpu->parent, other_gpu->parent) >= UVM_GPU_LINK_NVLINK_1) ||
+            uvm_parent_gpus_are_bar1_peers(gpu->parent, other_gpu->parent)) {
             NV_STATUS status = enable_peers(va_space, gpu, other_gpu);
             if (status != NV_OK)
                 return status;
@@ -163,7 +164,7 @@ static bool va_space_check_processors_masks(uvm_va_space_t *va_space)
         }
 
         UVM_ASSERT(uvm_processor_mask_subset(&va_space->has_native_atomics[uvm_id_value(processor)],
-                                             &va_space->can_access[uvm_id_value(processor)]));
+                                             &va_space->accessible_from[uvm_id_value(processor)]));
 
         for_each_id_in_mask(other_processor, &va_space->can_access[uvm_id_value(processor)])
             UVM_ASSERT(processor_mask_array_test(va_space->accessible_from, other_processor, processor));
@@ -267,6 +268,11 @@ NV_STATUS uvm_va_space_create(struct address_space *mapping, uvm_va_space_t **va
 
     uvm_hmm_va_space_initialize(va_space);
 
+    if (g_uvm_global.ats.enabled)
+        atomic_set(&va_space->ats.state, UVM_ATS_VA_SPACE_ATS_UNSET);
+    else
+        uvm_va_space_ats_set(va_space, UVM_ATS_VA_SPACE_ATS_UNSUPPORTED);
+
     uvm_va_space_up_write(va_space);
     uvm_up_write_mmap_lock(current->mm);
 
@@ -349,8 +355,8 @@ static void unregister_gpu(uvm_va_space_t *va_space,
         if (test_bit(pair_index, va_space->enabled_peers)) {
             disable_peers(va_space, gpu, peer_gpu, deferred_free_list);
 
-            // Only PCIE peers need to be globally released. NVLINK and MIG
-            // peers are brought up and torn down automatically within
+            // Only PCIE peers need to be globally released. NVLINK, BAR1, and
+            // SMC peers are brought up and torn down automatically within
             // add_gpu() and remove_gpu().
             if (peers_to_release && uvm_parent_gpu_peer_link_type(gpu->parent, peer_gpu->parent) == UVM_GPU_LINK_PCIE)
                 uvm_processor_mask_set(peers_to_release, peer_gpu->id);
@@ -799,6 +805,15 @@ NV_STATUS uvm_va_space_register_gpu(uvm_va_space_t *va_space,
         }
     }
 
+    // Adding a non-coherent GPU to a coherent VA space is not allowed and vice
+    // versa.
+    if (!uvm_va_space_ats_unset(va_space) &&
+        (uvm_va_space_ats_supported(va_space) !=
+         uvm_parent_gpu_supports_ats(gpu->parent))) {
+        status = NV_ERR_INVALID_DEVICE;
+        goto done;
+    }
+
     if (gpu->parent->is_integrated_gpu) {
         // TODO: Bug 5003533 [UVM][T264/GB10B] Multiple iGPU support
         if (uvm_processor_mask_get_gpu_count(&va_space->registered_gpus)) {
@@ -861,12 +876,15 @@ NV_STATUS uvm_va_space_register_gpu(uvm_va_space_t *va_space,
     }
 
     if (uvm_parent_gpu_is_coherent(gpu->parent)) {
-        processor_mask_array_set(va_space->has_native_atomics, gpu->id, UVM_ID_CPU);
+        // TODO: Bug 5277206: Integrated GPUs should report native atomics to system
+        // memory. In the case of integrated GPUs we need to add checks to
+        // detect GPUs can access CPU memory coherently
+        processor_mask_array_set(va_space->has_native_atomics, UVM_ID_CPU, gpu->id);
 
         if (gpu->mem_info.numa.enabled) {
             processor_mask_array_set(va_space->can_access, UVM_ID_CPU, gpu->id);
             processor_mask_array_set(va_space->accessible_from, gpu->id, UVM_ID_CPU);
-            processor_mask_array_set(va_space->has_native_atomics, UVM_ID_CPU, gpu->id);
+            processor_mask_array_set(va_space->has_native_atomics, gpu->id, UVM_ID_CPU);
         }
     }
 
@@ -923,10 +941,19 @@ NV_STATUS uvm_va_space_register_gpu(uvm_va_space_t *va_space,
         *numa_enabled = NV_TRUE;
         *numa_node_id = (NvS32)uvm_gpu_numa_node(gpu);
     }
+    else if (gpu->parent->is_integrated_gpu || gpu->parent->cdmm_enabled) {
+        *numa_enabled = NV_FALSE;
+        *numa_node_id = (NvS32)gpu->parent->closest_cpu_numa_node;
+    }
     else {
         *numa_enabled = NV_FALSE;
         *numa_node_id = -1;
     }
+
+    if (g_uvm_global.ats.enabled && uvm_parent_gpu_supports_ats(gpu->parent))
+        uvm_va_space_ats_set(va_space, UVM_ATS_VA_SPACE_ATS_SUPPORTED);
+    else
+        uvm_va_space_ats_set(va_space, UVM_ATS_VA_SPACE_ATS_UNSUPPORTED);
 
     goto done;
 
@@ -1279,6 +1306,13 @@ static bool uvm_va_space_pcie_peer_enabled(uvm_va_space_t *va_space, uvm_gpu_t *
 {
     return !processor_mask_array_test(va_space->has_fast_link, gpu0->id, gpu1->id) &&
            !uvm_gpus_are_smc_peers(gpu0, gpu1) &&
+           !uvm_parent_gpus_are_bar1_peers(gpu0->parent, gpu1->parent) &&
+           uvm_va_space_peer_enabled(va_space, gpu0, gpu1);
+}
+
+static bool uvm_va_space_bar1_peer_enabled(uvm_va_space_t *va_space, uvm_gpu_t *gpu0, uvm_gpu_t *gpu1)
+{
+    return uvm_parent_gpus_are_bar1_peers(gpu0->parent, gpu1->parent) &&
            uvm_va_space_peer_enabled(va_space, gpu0, gpu1);
 }
 
@@ -1386,6 +1420,7 @@ static NV_STATUS uvm_gpu_va_space_set_page_dir(uvm_gpu_va_space_t *gpu_va_space)
         return status;
     }
 
+    // The aperture here refers to sysmem, which uses UVM_APERTURE_SYS
     if (tree_alloc->addr.aperture == UVM_APERTURE_SYS)
         gpu_va_space->page_tables.pdb_rm_dma_address = uvm_gpu_phys_address(UVM_APERTURE_SYS, dma_address);
 
@@ -1516,7 +1551,7 @@ static NV_STATUS create_gpu_va_space(uvm_gpu_t *gpu,
 
     // If ATS support in the UVM driver isn't enabled, fail registration of GPU
     // VA spaces which have ATS enabled.
-    if (!g_uvm_global.ats.enabled && gpu_va_space->ats.enabled) {
+    if (!uvm_va_space_ats_enabled(va_space) && gpu_va_space->ats.enabled) {
         UVM_INFO_PRINT("GPU VA space requires ATS, but ATS is not supported or enabled\n");
         status = NV_ERR_INVALID_FLAGS;
         goto error;
@@ -1524,7 +1559,8 @@ static NV_STATUS create_gpu_va_space(uvm_gpu_t *gpu,
 
     // If this GPU VA space uses ATS then pageable memory access must not have
     // been disabled in the VA space.
-    if (gpu_va_space->ats.enabled && !uvm_va_space_pageable_mem_access_supported(va_space)) {
+    // The VA space can be in an ATS_UNSET state and accept either ATS or non-ATS.
+    if (gpu_va_space->ats.enabled && !uvm_va_space_pageable_mem_access_enabled(va_space)) {
         UVM_INFO_PRINT("GPU VA space requires ATS, but pageable memory access is not supported\n");
         status = NV_ERR_INVALID_FLAGS;
         goto error;
@@ -2016,6 +2052,7 @@ NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, stru
 
     uvm_mutex_lock(&g_uvm_global.global_lock);
     status = retain_pcie_peers_from_uuids(va_space, &params->gpuUuidA, &params->gpuUuidB, &gpu0, &gpu1);
+
     uvm_mutex_unlock(&g_uvm_global.global_lock);
     if (status != NV_OK)
         return status;
@@ -2086,6 +2123,22 @@ error:
     return status;
 }
 
+bool uvm_va_space_pageable_mem_access_enabled(uvm_va_space_t *va_space)
+{
+    // Any pageable memory access requires that we have mm_struct association
+    // via va_space_mm.
+    if (!uvm_va_space_mm_enabled(va_space))
+        return false;
+
+    // We might have systems with both ATS and HMM support. ATS gets priority.
+    // TODO: Bug 4103580: Once aarch64 supports HMM this condition will no
+    // longer be true.
+    if (g_uvm_global.ats.enabled)
+        return !uvm_va_space_ats_unsupported(va_space);
+
+    return uvm_hmm_is_enabled(va_space);
+}
+
 bool uvm_va_space_pageable_mem_access_supported(uvm_va_space_t *va_space)
 {
     // Any pageable memory access requires that we have mm_struct association
@@ -2094,22 +2147,23 @@ bool uvm_va_space_pageable_mem_access_supported(uvm_va_space_t *va_space)
         return false;
 
     // We might have systems with both ATS and HMM support. ATS gets priority.
+    // TODO: Bug 4103580: Once aarch64 supports HMM this condition will no
+    // longer be true.
     if (g_uvm_global.ats.supported)
         return g_uvm_global.ats.enabled;
 
     return uvm_hmm_is_enabled(va_space);
 }
 
-NV_STATUS uvm_test_get_pageable_mem_access_type(UVM_TEST_GET_PAGEABLE_MEM_ACCESS_TYPE_PARAMS *params,
-                                                 struct file *filp)
+NV_STATUS uvm_test_get_pageable_mem_access_type(UVM_TEST_GET_PAGEABLE_MEM_ACCESS_TYPE_PARAMS *params, struct file *filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
     params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_NONE;
 
-    if (uvm_va_space_pageable_mem_access_supported(va_space)) {
+    if (uvm_va_space_pageable_mem_access_enabled(va_space)) {
         if (g_uvm_global.ats.enabled)
-            params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS_DRIVER;
+            params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS;
         else
             params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_HMM;
     }
@@ -2133,7 +2187,7 @@ NV_STATUS uvm_test_flush_deferred_work(UVM_TEST_FLUSH_DEFERRED_WORK_PARAMS *para
     }
 }
 
-NV_STATUS uvm_test_enable_nvlink_peer_access(UVM_TEST_ENABLE_NVLINK_PEER_ACCESS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_test_enable_static_peer_access(UVM_TEST_ENABLE_STATIC_PEER_ACCESS_PARAMS *params, struct file *filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     NV_STATUS status = NV_OK;
@@ -2150,17 +2204,18 @@ NV_STATUS uvm_test_enable_nvlink_peer_access(UVM_TEST_ENABLE_NVLINK_PEER_ACCESS_
         !gpu1 ||
         uvm_id_equal(gpu0->id, gpu1->id) ||
         uvm_gpus_are_smc_peers(gpu0, gpu1) ||
-        uvm_parent_gpu_peer_link_type(gpu0->parent, gpu1->parent) < UVM_GPU_LINK_NVLINK_1) {
+        ((uvm_parent_gpu_peer_link_type(gpu0->parent, gpu1->parent) < UVM_GPU_LINK_NVLINK_1) &&
+         !uvm_parent_gpus_are_bar1_peers(gpu0->parent, gpu1->parent))) {
         uvm_va_space_up_write(va_space);
         return NV_ERR_INVALID_DEVICE;
     }
 
     pair_index = uvm_gpu_pair_index(gpu0->id, gpu1->id);
 
-    // NVLink peers are automatically enabled in the VA space at VA space
-    // registration time. In order to avoid tests having to keep track of the
-    // different initial state for PCIe and NVLink peers, we just return NV_OK
-    // if NVLink peer were already enabled.
+    // NVLink and BAR1 peers are automatically enabled in the VA space at VA
+    // space registration time. In order to avoid tests having to keep track of
+    // the different initial state for PCIe and NVLink peers, we just return
+    // NV_OK if NVLink peer were already enabled.
     if (test_bit(pair_index, va_space->enabled_peers))
         status = NV_OK;
     else
@@ -2171,7 +2226,7 @@ NV_STATUS uvm_test_enable_nvlink_peer_access(UVM_TEST_ENABLE_NVLINK_PEER_ACCESS_
     return status;
 }
 
-NV_STATUS uvm_test_disable_nvlink_peer_access(UVM_TEST_DISABLE_NVLINK_PEER_ACCESS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_test_disable_static_peer_access(UVM_TEST_DISABLE_STATIC_PEER_ACCESS_PARAMS *params, struct file *filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     NV_STATUS status = NV_OK;
@@ -2193,7 +2248,8 @@ NV_STATUS uvm_test_disable_nvlink_peer_access(UVM_TEST_DISABLE_NVLINK_PEER_ACCES
         goto error;
     }
 
-    if (!uvm_va_space_nvlink_peer_enabled(va_space, gpu0, gpu1)) {
+    if (!uvm_va_space_nvlink_peer_enabled(va_space, gpu0, gpu1) &&
+        !uvm_va_space_bar1_peer_enabled(va_space, gpu0, gpu1)) {
         status = NV_ERR_INVALID_DEVICE;
         goto error;
     }
@@ -2386,6 +2442,9 @@ uvm_service_block_context_t *uvm_service_block_context_alloc(struct mm_struct *m
     if (!service_context)
         return NULL;
 
+    if (UVM_IS_DEBUG())
+        memset(service_context, 0xff, sizeof(*service_context));
+
     service_context->block_context = uvm_va_block_context_alloc(mm);
     if (!service_context->block_context) {
         uvm_kvfree(service_context);
@@ -2479,13 +2538,11 @@ static void service_block_context_cpu_free(uvm_service_block_context_t *service_
     uvm_spin_unlock(&g_cpu_service_block_context_list_lock);
 }
 
-static vm_fault_t uvm_va_space_cpu_fault(uvm_va_space_t *va_space,
-                                         struct vm_area_struct *vma,
-                                         struct vm_fault *vmf,
-                                         bool is_hmm)
+static vm_fault_t uvm_va_space_cpu_fault(uvm_va_space_t *va_space, struct vm_fault *vmf, bool is_hmm)
 {
     uvm_va_block_t *va_block;
-    NvU64 fault_addr = nv_page_fault_va(vmf);
+    NvU64 fault_addr = vmf->address;
+    struct vm_area_struct *vma = vmf->vma;
     bool is_write = vmf->flags & FAULT_FLAG_WRITE;
     NV_STATUS status = uvm_global_get_status();
     bool tools_enabled;
@@ -2517,6 +2574,10 @@ static vm_fault_t uvm_va_space_cpu_fault(uvm_va_space_t *va_space,
         goto unlock;
     }
 
+    // The loop can exit early (before uvm_va_block_cpu_fault()), at which
+    // point the did_migrate flag can be un-initialized. It is later checked
+    // to determine if the fault was a major fault.
+    service_context->cpu_fault.did_migrate = false;
     service_context->cpu_fault.wakeup_time_stamp = 0;
     service_context->num_retries = 0;
 
@@ -2538,6 +2599,7 @@ static vm_fault_t uvm_va_space_cpu_fault(uvm_va_space_t *va_space,
     // for the purpose of lock ordering and we don't rely on it being in write
     // anywhere so just record it as read mode in all cases.
     uvm_record_lock_mmap_lock_read(vma->vm_mm);
+
 
     do {
         bool do_sleep = false;
@@ -2686,18 +2748,13 @@ convert_error:
     }
 }
 
-vm_fault_t uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space,
-                                          struct vm_area_struct *vma,
-                                          struct vm_fault *vmf)
+vm_fault_t uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space, struct vm_fault *vmf)
 {
-    UVM_ASSERT(va_space == uvm_va_space_get(vma->vm_file));
-
-    return uvm_va_space_cpu_fault(va_space, vma, vmf, false);
+    UVM_ASSERT(va_space == uvm_va_space_get(vmf->vma->vm_file));
+    return uvm_va_space_cpu_fault(va_space, vmf, false);
 }
 
-vm_fault_t uvm_va_space_cpu_fault_hmm(uvm_va_space_t *va_space,
-                                      struct vm_area_struct *vma,
-                                      struct vm_fault *vmf)
+vm_fault_t uvm_va_space_cpu_fault_hmm(uvm_va_space_t *va_space, struct vm_fault *vmf)
 {
-    return uvm_va_space_cpu_fault(va_space, vma, vmf, true);
+    return uvm_va_space_cpu_fault(va_space, vmf, true);
 }

@@ -25,6 +25,7 @@
 #define _NV_PROTO_H_
 
 #include "nv-pci.h"
+#include "nv-platform.h"
 
 extern const char *nv_device_name;
 
@@ -56,8 +57,6 @@ int         nv_uvm_init                 (void);
 void        nv_uvm_exit                 (void);
 NV_STATUS   nv_uvm_suspend              (void);
 NV_STATUS   nv_uvm_resume               (void);
-void        nv_uvm_notify_start_device  (const NvU8 *uuid);
-void        nv_uvm_notify_stop_device   (const NvU8 *uuid);
 NV_STATUS   nv_uvm_event_interrupt      (const NvU8 *uuid);
 NV_STATUS   nv_uvm_drain_P2P            (const NvU8 *uuid);
 NV_STATUS   nv_uvm_resume_P2P           (const NvU8 *uuid);
@@ -77,6 +76,8 @@ NV_STATUS     nv_set_system_power_state (nv_power_state_t, nv_pm_action_depth_t)
 
 void          nvidia_modeset_suspend           (NvU32 gpuId);
 void          nvidia_modeset_resume            (NvU32 gpuId);
+void          nvidia_modeset_remove            (NvU32 gpuId);
+void          nvidia_modeset_probe             (const nv_linux_state_t *nvl);
 NvBool        nv_is_uuid_in_gpu_exclusion_list (const char *);
 
 NV_STATUS     nv_parse_per_device_option_string(nvidia_stack_t *sp);

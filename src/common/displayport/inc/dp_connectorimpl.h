@@ -23,7 +23,7 @@
 
 /******************************* DisplayPort********************************\
 *                                                                           *
-* Module: dp_connectorimpl.cpp                                              *
+* Module: dp_connectorimpl.h                                                *
 *    DP connector implementation                                            *
 *                                                                           *
 \***************************************************************************/
@@ -137,6 +137,7 @@ namespace DisplayPort
         bool    bPConConnected;                 // HDMI2.1-Protocol Converter (Support SRC control mode) connected.
         bool    bSkipAssessLinkForPCon;         // Skip assessLink() for PCON. DD will call assessFRLLink later.
         bool    bHdcpAuthOnlyOnDemand;          // True if only initiate Hdcp authentication on demand and MST won't auto-trigger authenticate at device attach.
+        bool    bHdcpStrmEncrEnblOnlyOnDemand;  // True if only initiate Hdcp Stream Encryption Enable on demand and MST won't auto-trigger.
         bool    bReassessMaxLink;               // Retry assessLink() if the first assessed link config is lower than the panel max config.
 
         bool    constructorFailed;
@@ -186,6 +187,7 @@ namespace DisplayPort
         List activeGroups;
         LinkedList<GroupImpl> intransitionGroups;
         LinkedList<GroupImpl> addStreamMSTIntransitionGroups;
+        LinkedList<GroupImpl> hdcpEnableTransitionGroups;
         List inactiveGroups;
 
         LinkedList<Device> dscEnabledDevices;
@@ -197,7 +199,6 @@ namespace DisplayPort
         unsigned compoundQueryLocalLinkPBN;
         NvU64 compoundQueryUsedTunnelingBw;
         bool compoundQueryForceEnableFEC;
-        // WAR
         bool bDP2XPreferNonDSCForLowPClk;
 
         unsigned freeSlots;
@@ -259,6 +260,20 @@ namespace DisplayPort
 
         // Flag to check if the system is UEFI.
         bool        bIsUefiSystem;
+
+        //
+        // Flag to enable accounting available DP tunnelling BW while generating PPS
+        // for the mode
+        //
+        bool        bOptimizeDscBppForTunnellingBw;
+
+        //
+        // Flag to minimize link config for SST if it is 128b/132b.
+        // Enables gR-3336 if set.
+        //
+        bool        bEnable128b132bDSCLnkCfgReduction;
+
+        bool        bSkipResetLinkStateDuringPlug;
 
         // Flag to check if LT should be skipped.
         bool        bSkipLt;
@@ -338,6 +353,8 @@ namespace DisplayPort
         //
         NvU32       LT2FecLatencyMs;
 
+        bool        bIgnoreCapsAndForceHighestLc;
+
         // On eDP, do not cache the source OUI if it reads 0. See bug 4793112
         bool        bSkipZeroOuiCache;
 
@@ -345,7 +362,15 @@ namespace DisplayPort
 
         bool        bForceHeadShutdownPerMonitor;
 
-        bool        bEnableLowerBppCheckForDsc;
+         // Use max DSC compression for MST topologies
+         bool        bUseMaxDSCCompressionMST;
+
+        // Enable stats collection for compoundQueryAttach()
+        bool        bEnableCqaStatsCollection;
+        NvU64       cqaStatsMinUs = static_cast<NvU64>(-1);
+        NvU64       cqaStatsMaxUs = 0;
+        NvU64       cqaStatsSumUs = 0;
+        NvU64       cqaStatsCount = 0;
 
         //
         // Dual SST Partner connector object pointer
@@ -389,6 +414,9 @@ namespace DisplayPort
         bool        bForceDisableTunnelBwAllocation;
         bool        bDisableEffBppSST8b10b;
 
+        // Use regkey DP_DSC_DEVID_WAR to toggle this flag.
+        bool        bEnableDevId;
+
         Group *perHeadAttachedGroup[NV_MAX_HEADS];
         NvU32 inTransitionHeadMask;
 
@@ -424,7 +452,7 @@ namespace DisplayPort
         virtual void hardwareWasReset();
         virtual LinkConfiguration getMaxLinkConfig();
         virtual LinkConfiguration getActiveLinkConfig();
-        virtual void powerdownLink(bool bPowerdownPanel = false);
+        void powerdownLink(bool bPowerdownPanel = false);
         LinkConfiguration initMaxLinkConfig();
 
         GroupImpl * getActiveGroupForSST();
@@ -524,8 +552,8 @@ namespace DisplayPort
 
         virtual bool compoundQueryAttachSSTDsc(const DpModesetParams &modesetParams,
                                                LinkConfiguration lc,
-                                               DscParams *pDscParams = NULL,       
-                                               DP_IMP_ERROR *pErrorCode = NULL);  
+                                               DscParams *pDscParams = NULL,
+                                               DP_IMP_ERROR *pErrorCode = NULL);
 
 
         //
@@ -537,6 +565,7 @@ namespace DisplayPort
         char tagDelayedHdcpCapRead;
         char tagDelayedHDCPCPIrqHandling;
         char tagDpBwAllocationChanged;
+        char tagHDCPStreamEncrEnable;
 
         //
         //  Enable disable TMDS mode
@@ -594,6 +623,7 @@ namespace DisplayPort
             unsigned rasterBlankEndX,
             unsigned depth) ;
 
+        void ensureMstNodesPoweredUp(Group * target);
         virtual void readRemoteHdcpCaps();
         virtual void notifyAttachEnd(bool modesetCancelled);
         virtual void notifyDetachBegin(Group * target);
@@ -613,6 +643,7 @@ namespace DisplayPort
         bool     allocateMaxDpTunnelBw();
         NvU64    getMaxTunnelBw();
         void     enableDpTunnelingBwAllocationSupport();
+        void     cancelDpTunnelBwAllocation();
 
         void assessLink(LinkTrainingType trainType = NORMAL_LINK_TRAINING);
 
@@ -779,6 +810,11 @@ namespace DisplayPort
         {
             activeLinkConfig.setLTCounter(0);
         }
+
+        virtual bool isDpInTunnelingSupported();
+        virtual bool isDpInTunnelingPanelReplayOptimizationSupported();
+        virtual bool isDpInTunnelingBwAllocationSupported();
+        virtual bool getUSBDpInAdapterInfo(NvU32 displayId, NV0073_CTRL_DP_USB4_INFO *pInfo);
     };
 
     //

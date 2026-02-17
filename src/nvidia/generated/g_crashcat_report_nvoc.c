@@ -100,6 +100,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__CrashCatReport =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_crashcatReportDestruct(CrashCatReport*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_CrashCatReport(CrashCatReport *pThis) {
     __nvoc_crashcatReportDestruct(pThis);
@@ -226,16 +227,25 @@ void __nvoc_init__CrashCatReport(CrashCatReport *pThis,
 }
 
 NV_STATUS __nvoc_objCreate_CrashCatReport(CrashCatReport **ppThis, Dynamic *pParent, NvU32 createFlags,
-        NV_CRASHCAT_PACKET_FORMAT_VERSION CrashCatReportHal_version, CrashCatImplementer CrashCatReportHal_implementer, void ** arg_ppReportBytes, NvLength arg_bytesRemaining)
+        NV_CRASHCAT_PACKET_FORMAT_VERSION CrashCatReportHal_version, CrashCatImplementer CrashCatReportHal_implementer, void **arg_ppReportBytes, NvLength arg_bytesRemaining)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     CrashCatReport *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(CrashCatReport), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(CrashCatReport));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(CrashCatReport));
@@ -253,6 +263,7 @@ NV_STATUS __nvoc_objCreate_CrashCatReport(CrashCatReport **ppThis, Dynamic *pPar
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__CrashCatReport(pThis, CrashCatReportHal_version, CrashCatReportHal_implementer);
     status = __nvoc_ctor_CrashCatReport(pThis, arg_ppReportBytes, arg_bytesRemaining);
     if (status != NV_OK) goto __nvoc_objCreate_CrashCatReport_cleanup;
@@ -260,24 +271,28 @@ NV_STATUS __nvoc_objCreate_CrashCatReport(CrashCatReport **ppThis, Dynamic *pPar
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_CrashCatReport_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(CrashCatReport));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
@@ -285,7 +300,7 @@ NV_STATUS __nvoc_objCreateDynamic_CrashCatReport(CrashCatReport **ppThis, Dynami
     NV_STATUS status;
     NV_CRASHCAT_PACKET_FORMAT_VERSION CrashCatReportHal_version = va_arg(args, NV_CRASHCAT_PACKET_FORMAT_VERSION);
     CrashCatImplementer CrashCatReportHal_implementer = va_arg(args, CrashCatImplementer);
-    void ** arg_ppReportBytes = va_arg(args, void **);
+    void **arg_ppReportBytes = va_arg(args, void **);
     NvLength arg_bytesRemaining = va_arg(args, NvLength);
 
     status = __nvoc_objCreate_CrashCatReport(ppThis, pParent, createFlags, CrashCatReportHal_version, CrashCatReportHal_implementer, arg_ppReportBytes, arg_bytesRemaining);

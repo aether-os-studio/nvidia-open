@@ -35,8 +35,7 @@
  * 2. GPFIFO entries;
  * 3. The "progress tracker" pushbuffer.  This is used by the DMA kickoff code
  *    as a reserved area to put semaphore release methods, which we use to
- *    track HOST's progress fetching the pushbuffer.  We also use this to
- *    workaround hardware bug 1667921.
+ *    track HOST's progress fetching the pushbuffer.
  */
 
 /* Offset of the GPFIFO entries: entry (2) above. */
@@ -47,18 +46,7 @@ static inline NvU32 __nvPushGpFifoOffset(const NvPushChannelRec *pChannel)
 }
 
 /*
- * We need to align each set of methods in the progress tracker pushbuffer to
- * 128 bytes so that we avoid HW bug 1667921 (on chips that are affected).
- * This is used for both the start of the GPFIFO segment _and_ the size (for
- * each GPFIFO entry).
- */
-#define NV_ALIGN_LBDAT_EXTRA_BUG         128
-/*
  * Offset of the progress tracker pushbuffer: entry (3) above.
- *
- * Note that we always use the appropriate alignment to WAR the LBDAT_EXTRA bug
- * for the offset.  Although this is only necessary on some chips, it's simpler
- * to always use this alignment.
  */
 static inline NvU32 __nvPushProgressTrackerOffset(
     const NvPushChannelRec *pChannel)
@@ -69,7 +57,7 @@ static inline NvU32 __nvPushProgressTrackerOffset(
 
     nvAssert(gpFifoLength != 0);
 
-    return NV_ALIGN_UP(gpFifoOffset + gpFifoLength, NV_ALIGN_LBDAT_EXTRA_BUG);
+    return gpFifoOffset + gpFifoLength;
 }
 
 /* We always write two GPFIFO entries: one for the main pushbuffer, and one

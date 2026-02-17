@@ -80,6 +80,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__CrashCatQueue =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_crashcatQueueDestruct(CrashCatQueue*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_CrashCatQueue(CrashCatQueue *pThis) {
     __nvoc_crashcatQueueDestruct(pThis);
@@ -149,17 +150,26 @@ void __nvoc_init__CrashCatQueue(CrashCatQueue *pThis, CrashCatWayfinder *pCrashc
     __nvoc_init_funcTable_CrashCatQueue(pThis, pCrashcatWayfinder);
 }
 
-NV_STATUS __nvoc_objCreate_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParent, NvU32 createFlags, CrashCatQueueConfig * arg_pQueueConfig)
+NV_STATUS __nvoc_objCreate_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParent, NvU32 createFlags, CrashCatQueueConfig *arg_pQueueConfig)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     CrashCatQueue *pThis;
     CrashCatWayfinder *pCrashcatWayfinder;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(CrashCatQueue), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(CrashCatQueue));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(CrashCatQueue));
@@ -167,7 +177,7 @@ NV_STATUS __nvoc_objCreate_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParen
     pThis->__nvoc_base_Object.createFlags = createFlags;
 
     // pParent must be a valid object that derives from a halspec owner class.
-    NV_ASSERT_OR_RETURN(pParent != NULL, NV_ERR_INVALID_ARGUMENT);
+    NV_CHECK_TRUE_OR_GOTO(status, LEVEL_ERROR, pParent != NULL, NV_ERR_INVALID_ARGUMENT, __nvoc_objCreate_CrashCatQueue_cleanup);
 
     // Link the child into the parent unless flagged not to do so.
     if (!(createFlags & NVOC_OBJ_CREATE_FLAGS_PARENT_HALSPEC_ONLY))
@@ -180,10 +190,12 @@ NV_STATUS __nvoc_objCreate_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParen
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // HALs are defined by the parent or the first super class.
     if ((pCrashcatWayfinder = dynamicCast(pParent, CrashCatWayfinder)) == NULL)
         pCrashcatWayfinder = objFindAncestorOfType(CrashCatWayfinder, pParent);
-    NV_ASSERT_OR_RETURN(pCrashcatWayfinder != NULL, NV_ERR_INVALID_ARGUMENT);
+    NV_CHECK_TRUE_OR_GOTO(status, LEVEL_ERROR, pCrashcatWayfinder != NULL, NV_ERR_INVALID_ARGUMENT, __nvoc_objCreate_CrashCatQueue_cleanup);
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__CrashCatQueue(pThis, pCrashcatWayfinder);
     status = __nvoc_ctor_CrashCatQueue(pThis, pCrashcatWayfinder, arg_pQueueConfig);
     if (status != NV_OK) goto __nvoc_objCreate_CrashCatQueue_cleanup;
@@ -191,30 +203,34 @@ NV_STATUS __nvoc_objCreate_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParen
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_CrashCatQueue_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(CrashCatQueue));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_CrashCatQueue(CrashCatQueue **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    CrashCatQueueConfig * arg_pQueueConfig = va_arg(args, CrashCatQueueConfig *);
+    CrashCatQueueConfig *arg_pQueueConfig = va_arg(args, CrashCatQueueConfig *);
 
     status = __nvoc_objCreate_CrashCatQueue(ppThis, pParent, createFlags, arg_pQueueConfig);
 

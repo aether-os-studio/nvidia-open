@@ -78,6 +78,7 @@ NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_hopper_sec2.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_hopper_mmu.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_ada.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_blackwell.c
+NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_blackwell_ce.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_blackwell_fault_buffer.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_blackwell_mmu.c
 NVIDIA_UVM_SOURCES += nvidia-uvm/uvm_blackwell_host.c

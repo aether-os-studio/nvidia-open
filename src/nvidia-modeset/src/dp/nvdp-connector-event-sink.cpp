@@ -271,8 +271,7 @@ static void EnableVRR(NVDpyEvoPtr pDpyEvo)
                          "%s: Failed to initialize G-SYNC",
                          pDpyEvo->name);
         }
-    } else if (pDispEvo->pDevEvo->caps.supportsDP13 &&
-               device->getIgnoreMSACap()) {
+    } else if (device->getIgnoreMSACap()) {
         // DP monitors indicate Adaptive-Sync support through the
         // MSA_TIMING_PAR_IGNORED bit in the DOWN_STREAM_PORT_COUNT register
         // (DP spec 1.4a section 2.2.4.1.1)

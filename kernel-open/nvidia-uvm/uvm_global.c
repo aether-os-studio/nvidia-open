@@ -42,24 +42,21 @@
 #include "nv_uvm_interface.h"
 
 uvm_global_t g_uvm_global;
-static struct UvmOpsUvmEvents g_exported_uvm_ops;
+static struct UvmEventsLinux g_exported_uvm_events;
 static bool g_ops_registered = false;
 
 static NV_STATUS uvm_register_callbacks(void)
 {
     NV_STATUS status = NV_OK;
 
-    g_exported_uvm_ops.suspend = uvm_suspend_entry;
-    g_exported_uvm_ops.resume = uvm_resume_entry;
-    g_exported_uvm_ops.startDevice = NULL;
-    g_exported_uvm_ops.stopDevice  = NULL;
-    g_exported_uvm_ops.isrTopHalf  = uvm_isr_top_half_entry;
-
-    g_exported_uvm_ops.drainP2P = uvm_suspend_and_drainP2P_entry;
-    g_exported_uvm_ops.resumeP2P = uvm_resumeP2P_entry;
+    g_exported_uvm_events.isrTopHalf = uvm_isr_top_half_entry;
+    g_exported_uvm_events.suspend = uvm_suspend_entry;
+    g_exported_uvm_events.resume = uvm_resume_entry;
+    g_exported_uvm_events.drainP2P = uvm_suspend_and_drainP2P_entry;
+    g_exported_uvm_events.resumeP2P = uvm_resumeP2P_entry;
 
     // Register the UVM callbacks with the main GPU driver:
-    status = uvm_rm_locked_call(nvUvmInterfaceRegisterUvmCallbacks(&g_exported_uvm_ops));
+    status = uvm_rm_locked_call(nvUvmInterfaceRegisterUvmEvents(&g_exported_uvm_events));
     if (status != NV_OK)
         return status;
 
@@ -71,7 +68,7 @@ static NV_STATUS uvm_register_callbacks(void)
 static void uvm_unregister_callbacks(void)
 {
     if (g_ops_registered) {
-        uvm_rm_locked_call_void(nvUvmInterfaceDeRegisterUvmOps());
+        uvm_rm_locked_call_void(nvUvmInterfaceDeRegisterUvmEvents());
         g_ops_registered = false;
     }
 }

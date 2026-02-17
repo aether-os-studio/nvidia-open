@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2015-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2015-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -615,8 +615,9 @@ extern void serverSessionLock_Epilogue(RsServer *pServer, LOCK_ACCESS_TYPE acces
  * @param[in]       access          LOCK_ACCESS_READ or LOCK_ACCESS_WRITE
  * @param[inout]    pLockInfo       Lock state
  * @param[inout]    pReleaseFlags   Output flags indicating the locks that need to be released
+ * @param[in]       gpuMask         Bitmask of additional GPUs to lock
  */
-extern NV_STATUS serverResLock_Prologue(RsServer *pServer, LOCK_ACCESS_TYPE access, RS_LOCK_INFO *pLockInfo, NvU32 *pReleaseFlags);
+extern NV_STATUS serverResLock_Prologue(RsServer *pServer, LOCK_ACCESS_TYPE access, RS_LOCK_INFO *pLockInfo, NvU32 *pReleaseFlags, NvU32 gpuMask);
 
 /**
  * Releases a resource-level lock. User-implemented.

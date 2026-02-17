@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -29,9 +29,7 @@
 
 #if defined(NV_DRM_AVAILABLE)
 
-#if defined(NV_DRM_FENCE_AVAILABLE)
-#include "nvidia-dma-fence-helper.h"
-#endif
+#include "linux/dma-fence.h"
 
 #if defined(NV_LINUX) || defined(NV_BSD)
 #include "nv-kthread-q.h"
@@ -71,8 +69,6 @@ void *nv_drm_calloc(size_t nmemb, size_t size);
 
 void nv_drm_free(void *ptr);
 
-char *nv_drm_asprintf(const char *fmt, ...);
-
 void nv_drm_write_combine_flush(void);
 
 int nv_drm_lock_user_pages(unsigned long address,
@@ -101,17 +97,13 @@ void nv_drm_timer_setup(nv_drm_timer *timer,
 
 void nv_drm_mod_timer(nv_drm_timer *timer, unsigned long relative_timeout_ms);
 
-bool nv_drm_del_timer_sync(nv_drm_timer *timer);
-
 unsigned long nv_drm_timer_now(void);
 
 unsigned long nv_drm_timeout_from_ms(NvU64 relative_timeout_ms);
 
-#if defined(NV_DRM_FENCE_AVAILABLE)
-int nv_drm_create_sync_file(nv_dma_fence_t *fence);
+int nv_drm_create_sync_file(struct dma_fence *fence);
 
-nv_dma_fence_t *nv_drm_sync_file_get_fence(int fd);
-#endif /* defined(NV_DRM_FENCE_AVAILABLE) */
+struct dma_fence *nv_drm_sync_file_get_fence(int fd);
 
 void nv_drm_yield(void);
 

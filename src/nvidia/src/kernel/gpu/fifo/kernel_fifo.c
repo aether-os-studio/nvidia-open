@@ -1,5 +1,5 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ /*
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -1365,6 +1365,7 @@ kfifoChidMgrAllocChannelGroupHwID_IMPL
 )
 {
     NvU32 maxChannelGroups;
+    char logMessage[256] = "";
 
     if (pChGrpID == NULL)
         return NV_ERR_INVALID_ARGUMENT;
@@ -1389,6 +1390,13 @@ kfifoChidMgrAllocChannelGroupHwID_IMPL
     {
         *pChGrpID = maxChannelGroups;
         NV_PRINTF(LEVEL_ERROR, "No allocatable FIFO available.\n");
+
+        // For vGPU, log the error message on host side as well
+        if (IS_VIRTUAL(pGpu))
+        {
+            nvDbgSnprintf(logMessage, sizeof(logMessage), "Guest attempted to allocate channel above its max per engine channel limit 0x%x", maxChannelGroups);
+            NV_RM_RPC_LOG(pGpu, (const char *)logMessage, NV_VGPU_LOG_LEVEL_ERROR);
+        }
         return NV_ERR_NO_FREE_FIFOS;
     }
     return NV_OK;
@@ -2537,7 +2545,6 @@ kfifoGetRunlistBufInfo_IMPL
     CHID_MGR       *pChidMgr = kfifoGetChidMgr(pGpu, pKernelFifo, runlistId);
     NvU32           runlistSizeMultiplier = 1;
     RM_ENGINE_TYPE  rmEngineType;
-    NvU32           schedPolicy;
 
     NV_ASSERT_OR_RETURN(pSize != NULL, NV_ERR_INVALID_ARGUMENT);
     NV_ASSERT_OR_RETURN(pAlignment != NULL, NV_ERR_INVALID_ARGUMENT);
@@ -2570,9 +2577,11 @@ kfifoGetRunlistBufInfo_IMPL
     NV_ASSERT_OK_OR_RETURN(kfifoEngineInfoXlate_HAL(pGpu, pKernelFifo, ENGINE_INFO_TYPE_RUNLIST,
                 runlistId, ENGINE_INFO_TYPE_RM_ENGINE_TYPE, (NvU32 *)&rmEngineType));
 
-    if (RM_ENGINE_TYPE_IS_GR(rmEngineType) && IS_MIG_IN_USE(pGpu))
+    if (IS_MIG_IN_USE(pGpu) && (
+                                RM_ENGINE_TYPE_IS_GR(rmEngineType)))
     {
-        gpuGetSchedulerPolicy(pGpu, &schedPolicy);
+        NvU32 schedPolicy = gpuGetSchedulerPolicy(pGpu, rmEngineType);
+
         if (schedPolicy != SCHED_POLICY_DEFAULT)
         {
             runlistSizeMultiplier = vgpuMgrGetSwrlCountToAllocate(pGpu);
@@ -3521,7 +3530,6 @@ kfifoGetGuestEngineLookupTable_IMPL
         {NV2080_ENGINE_TYPE_NVENC0,     MC_ENGINE_IDX_NVENC},
         {NV2080_ENGINE_TYPE_NVENC1,     MC_ENGINE_IDX_NVENC1},
         {NV2080_ENGINE_TYPE_NVENC2,     MC_ENGINE_IDX_NVENC2},
-// Bug 4175886 - Use this new value for all chips once GB20X is released
         {NV2080_ENGINE_TYPE_NVENC3,     MC_ENGINE_IDX_NVENC3},
         {NV2080_ENGINE_TYPE_NVDEC0,     MC_ENGINE_IDX_NVDEC0},
         {NV2080_ENGINE_TYPE_NVDEC1,     MC_ENGINE_IDX_NVDEC1},

@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2016-2023 NVIDIA Corporation
+    Copyright (c) 2016-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -253,7 +253,7 @@ static NvU64 make_pte_maxwell(uvm_aperture_t aperture, NvU64 address, uvm_prot_t
     else
         pte_bits |= HWCONST64(_MMU, PTE, VOL, TRUE);
 
-    // aperture 34:32
+    // aperture 34:33
     if (aperture == UVM_APERTURE_SYS)
         aperture_bits = NV_MMU_PTE_APERTURE_SYSTEM_COHERENT_MEMORY;
     else if (aperture == UVM_APERTURE_VID)
@@ -296,7 +296,7 @@ static NvU64 make_sked_reflected_pte_maxwell(void)
     return pte_bits;
 }
 
-static NvU64 poisoned_pte_maxwell(void)
+static NvU64 poisoned_pte_maxwell(uvm_page_tree_t *tree)
 {
     // An invalid PTE is also fatal on Maxwell, but a PRIV violation will
     // immediately identify bad PTE usage.
@@ -309,7 +309,7 @@ static NvU64 poisoned_pte_maxwell(void)
     // This address has to fit within 37 bits (max address width of vidmem) and
     // be aligned to page_size.
     NvU64 phys_addr = 0x1bad000000ULL;
-    NvU64 pte_bits = make_pte_maxwell(UVM_APERTURE_VID, phys_addr, UVM_PROT_READ_ONLY, UVM_MMU_PTE_FLAGS_NONE);
+    NvU64 pte_bits = tree->hal->make_pte(UVM_APERTURE_VID, phys_addr, UVM_PROT_READ_ONLY, UVM_MMU_PTE_FLAGS_NONE);
 
     return WRITE_HWCONST64(pte_bits, _MMU, PTE, PRIVILEGE, TRUE);
 }
@@ -317,8 +317,13 @@ static NvU64 poisoned_pte_maxwell(void)
 // Sparse mappings are not supported.
 static NvU64 make_sparse_pte_maxwell_unsupported(void)
 {
+    NvU64 pte_bits;
+
     UVM_ASSERT_MSG(0, "Sparse mappings unsupported on pre-Pascal GPUs\n");
-    return poisoned_pte_maxwell();
+
+    pte_bits = HWCONST64(_MMU, PTE, VALID, FALSE);
+
+    return pte_bits;
 }
 
 static uvm_mmu_mode_hal_t maxwell_64_mmu_mode_hal =

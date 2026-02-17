@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2015-2024 NVIDIA Corporation
+    Copyright (c) 2015-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -209,6 +209,15 @@ void uvm_hal_blackwell_host_tlb_invalidate_va(uvm_push_t *push,
                                               NvU64 page_size,
                                               uvm_membar_t membar);
 
+// Issue a TLB invalidate applying to cached physical translations (GPAs), such
+// as those used by ATS for physical CE transfer. No membar is performed.
+typedef void (*uvm_hal_host_tlb_invalidate_phys_t)(uvm_push_t *push);
+
+// Volta was the first GPU which enabled caching of physical translations, but
+// we have no need to invalidate manually until Blackwell.
+void uvm_hal_maxwell_host_tlb_invalidate_phys_unsupported(uvm_push_t *push);
+void uvm_hal_blackwell_host_tlb_invalidate_phys(uvm_push_t *push);
+
 typedef void (*uvm_hal_host_tlb_invalidate_test_t)(uvm_push_t *push,
                                                    uvm_gpu_phys_address_t pdb,
                                                    UVM_TEST_INVALIDATE_TLB_PARAMS *params);
@@ -230,6 +239,21 @@ void uvm_hal_hopper_host_tlb_invalidate_test(uvm_push_t *push,
 void uvm_hal_blackwell_host_tlb_invalidate_test(uvm_push_t *push,
                                                 uvm_gpu_phys_address_t pdb,
                                                 UVM_TEST_INVALIDATE_TLB_PARAMS *params);
+
+// Flush out pending physical MMU prefetches to guarantee that no new
+// translations can observe them.
+typedef void (*uvm_hal_host_tlb_flush_prefetch_t)(uvm_push_t *push);
+
+// Blackwell is the first GPU which needs prefetch flushing
+void uvm_hal_maxwell_host_tlb_flush_prefetch_unsupported(uvm_push_t *push);
+void uvm_hal_blackwell_host_tlb_flush_prefetch(uvm_push_t *push);
+
+// Performs L2 cache invalidation for peer or system memory.
+typedef void (*uvm_hal_host_l2_invalidate_t)(uvm_push_t *push, uvm_aperture_t aperture);
+void uvm_hal_blackwell_host_l2_invalidate(uvm_push_t *push, uvm_aperture_t aperture);
+
+void uvm_hal_ampere_host_l2_invalidate(uvm_push_t *push, uvm_aperture_t aperture);
+void uvm_hal_host_l2_invalidate_unsupported(uvm_push_t *push, uvm_aperture_t aperture);
 
 // By default all semaphore release operations include a membar sys before the
 // operation. This can be affected by using UVM_PUSH_FLAG_NEXT_* flags with
@@ -324,6 +348,7 @@ void uvm_hal_hopper_ce_offset_in_out(uvm_push_t *push, NvU64 offset_in, NvU64 of
 typedef NvU32 (*uvm_hal_ce_phys_mode_t)(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 NvU32 uvm_hal_maxwell_ce_phys_mode(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 NvU32 uvm_hal_ampere_ce_phys_mode(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
+NvU32 uvm_hal_hopper_ce_phys_mode(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 
 typedef NvU32 (*uvm_hal_ce_plc_mode_t)(void);
 NvU32 uvm_hal_maxwell_ce_plc_mode(void);
@@ -344,6 +369,7 @@ typedef bool (*uvm_hal_ce_memcopy_is_valid)(uvm_push_t *push, uvm_gpu_address_t 
 bool uvm_hal_maxwell_ce_memcopy_is_valid(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 bool uvm_hal_ampere_ce_memcopy_is_valid_c6b5(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 bool uvm_hal_hopper_ce_memcopy_is_valid(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
+bool uvm_hal_blackwell_ce_memcopy_is_valid(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu_address_t src);
 
 // Patching of the memcopy source; if not needed for a given architecture use
 // the (empty) uvm_hal_ce_memcopy_patch_src_stub implementation
@@ -704,6 +730,10 @@ typedef NvU32 (*uvm_hal_access_counter_buffer_entry_size_t)(uvm_parent_gpu_t *pa
 typedef void (*uvm_hal_access_counter_clear_all_t)(uvm_push_t *push);
 typedef void (*uvm_hal_access_counter_clear_targeted_t)(uvm_push_t *push,
                                                         const uvm_access_counter_buffer_entry_t *buffer_entry);
+typedef uvm_access_counter_clear_op_t
+        (*uvm_hal_access_counter_query_clear_op_t)(uvm_parent_gpu_t *parent_gpu,
+                                                   uvm_access_counter_buffer_entry_t **buffer_entries,
+                                                   NvU32 num_entries);
 
 void uvm_hal_maxwell_enable_access_counter_notifications_unsupported(uvm_access_counter_buffer_t *access_counters);
 void uvm_hal_maxwell_disable_access_counter_notifications_unsupported(uvm_access_counter_buffer_t *access_counters);
@@ -720,6 +750,10 @@ NvU32 uvm_hal_maxwell_access_counter_buffer_entry_size_unsupported(uvm_parent_gp
 void uvm_hal_maxwell_access_counter_clear_all_unsupported(uvm_push_t *push);
 void uvm_hal_maxwell_access_counter_clear_targeted_unsupported(uvm_push_t *push,
                                                                const uvm_access_counter_buffer_entry_t *buffer_entry);
+uvm_access_counter_clear_op_t
+uvm_hal_maxwell_access_counter_query_clear_op_unsupported(uvm_parent_gpu_t *parent_gpu,
+                                                          uvm_access_counter_buffer_entry_t **buffer_entries,
+                                                          NvU32 num_entries);
 
 void uvm_hal_turing_enable_access_counter_notifications(uvm_access_counter_buffer_t *access_counters);
 void uvm_hal_turing_disable_access_counter_notifications(uvm_access_counter_buffer_t *access_counters);
@@ -733,6 +767,18 @@ NvU32 uvm_hal_turing_access_counter_buffer_entry_size(uvm_parent_gpu_t *parent_g
 void uvm_hal_turing_access_counter_clear_all(uvm_push_t *push);
 void uvm_hal_turing_access_counter_clear_targeted(uvm_push_t *push,
                                                   const uvm_access_counter_buffer_entry_t *buffer_entry);
+uvm_access_counter_clear_op_t
+uvm_hal_turing_access_counter_query_clear_op(uvm_parent_gpu_t *parent_gpu,
+                                             uvm_access_counter_buffer_entry_t **buffer_entries,
+                                             NvU32 num_entries);
+uvm_access_counter_clear_op_t
+uvm_hal_blackwell_access_counter_query_clear_op_gb100(uvm_parent_gpu_t *parent_gpu,
+                                                      uvm_access_counter_buffer_entry_t **buffer_entries,
+                                                      NvU32 num_entries);
+uvm_access_counter_clear_op_t
+uvm_hal_blackwell_access_counter_query_clear_op_gb20x(uvm_parent_gpu_t *parent_gpu,
+                                                      uvm_access_counter_buffer_entry_t **buffer_entries,
+                                                      NvU32 num_entries);
 
 // The source and destination addresses must be 16-byte aligned. Note that the
 // best performance is achieved with 256-byte alignment. The decrypt size must
@@ -776,7 +822,10 @@ struct uvm_host_hal_struct
     uvm_hal_host_write_gpu_put_t write_gpu_put;
     uvm_hal_host_tlb_invalidate_all_t tlb_invalidate_all;
     uvm_hal_host_tlb_invalidate_va_t tlb_invalidate_va;
+    uvm_hal_host_tlb_invalidate_phys_t tlb_invalidate_phys;
     uvm_hal_host_tlb_invalidate_test_t tlb_invalidate_test;
+    uvm_hal_host_tlb_flush_prefetch_t tlb_flush_prefetch;
+    uvm_hal_host_l2_invalidate_t l2_invalidate;
     uvm_hal_fault_buffer_replay_t replay_faults;
     uvm_hal_fault_cancel_global_t cancel_faults_global;
     uvm_hal_fault_cancel_targeted_t cancel_faults_targeted;
@@ -786,6 +835,7 @@ struct uvm_host_hal_struct
     uvm_hal_host_clear_faulted_channel_register_t clear_faulted_channel_register;
     uvm_hal_access_counter_clear_all_t access_counter_clear_all;
     uvm_hal_access_counter_clear_targeted_t access_counter_clear_targeted;
+    uvm_hal_access_counter_query_clear_op_t access_counter_query_clear_op;
     uvm_hal_get_time_t get_time;
 };
 
@@ -938,5 +988,9 @@ bool uvm_hal_membar_before_semaphore(uvm_push_t *push);
 // is_local_vidmem indicates whether all mappings being invalidated pointed to
 // the local GPU's memory.
 uvm_membar_t uvm_hal_downgrade_membar_type(uvm_gpu_t *gpu, bool is_local_vidmem);
+
+// Perform the requested physical GPU TLB invalidation for cached IOMMU
+// mappings. See uvm_dma_map_invalidation_t. No membar is performed.
+void uvm_hal_tlb_invalidate_phys(uvm_push_t *push, uvm_dma_map_invalidation_t inval_type);
 
 #endif // __UVM_HAL_H__

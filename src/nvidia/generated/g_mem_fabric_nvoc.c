@@ -122,17 +122,19 @@ const struct NVOC_CLASS_DEF __nvoc_class_def_MemoryFabric =
     /*pExportInfo=*/        &__nvoc_export_info__MemoryFabric
 };
 
+// By default, all exported methods are enabled.
 #if !defined(NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG)
 #define NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(x)      (0)
 #endif
 
+// Exported method array
 static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFabric[] = 
 {
     {               /*  [0] */
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlGetInfo_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlGetInfo_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
         /*flags=*/      0x118u,
         /*accessRight=*/0x0u,
@@ -144,12 +146,12 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
 #endif
     },
     {               /*  [1] */
-#if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x318u)
+#if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x10318u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlCmdDescribe_IMPL,
-#endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x318u)
-        /*flags=*/      0x318u,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlCmdDescribe_IMPL,
+#endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x10318u)
+        /*flags=*/      0x10318u,
         /*accessRight=*/0x0u,
         /*methodId=*/   0xf80102u,
         /*paramSize=*/  sizeof(NV00F8_CTRL_DESCRIBE_PARAMS),
@@ -162,7 +164,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlAttachMem_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlAttachMem_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
         /*flags=*/      0x918u,
         /*accessRight=*/0x0u,
@@ -177,7 +179,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlDetachMem_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlDetachMem_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
         /*flags=*/      0x918u,
         /*accessRight=*/0x0u,
@@ -192,7 +194,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlGetNumAttachedMem_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlGetNumAttachedMem_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
         /*flags=*/      0x118u,
         /*accessRight=*/0x0u,
@@ -207,7 +209,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x110u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricCtrlGetPageLevelInfo_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricCtrlGetPageLevelInfo_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x110u)
         /*flags=*/      0x110u,
         /*accessRight=*/0x0u,
@@ -218,7 +220,6 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
         /*func=*/       "memoryfabricCtrlGetPageLevelInfo"
 #endif
     },
-
 };
 
 
@@ -493,6 +494,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__MemoryFabric =
     /*pExportEntries=*/ __nvoc_exported_method_def_MemoryFabric
 };
 
+void __nvoc_memoryfabricDestruct(MemoryFabric*);
 void __nvoc_dtor_Memory(Memory*);
 void __nvoc_dtor_MemoryFabric(MemoryFabric *pThis) {
     __nvoc_memoryfabricDestruct(pThis);
@@ -526,43 +528,11 @@ __nvoc_ctor_MemoryFabric_exit:
 // Vtable initialization
 static void __nvoc_init_funcTable_MemoryFabric_1(MemoryFabric *pThis) {
     PORT_UNREFERENCED_VARIABLE(pThis);
-
-    // memoryfabricCtrlGetInfo -- exported (id=0xf80101)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
-    pThis->__memoryfabricCtrlGetInfo__ = &memoryfabricCtrlGetInfo_IMPL;
-#endif
-
-    // memoryfabricCtrlCmdDescribe -- exported (id=0xf80102)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x318u)
-    pThis->__memoryfabricCtrlCmdDescribe__ = &memoryfabricCtrlCmdDescribe_IMPL;
-#endif
-
-    // memoryfabricCtrlAttachMem -- exported (id=0xf80103)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
-    pThis->__memoryfabricCtrlAttachMem__ = &memoryfabricCtrlAttachMem_IMPL;
-#endif
-
-    // memoryfabricCtrlDetachMem -- exported (id=0xf80104)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x918u)
-    pThis->__memoryfabricCtrlDetachMem__ = &memoryfabricCtrlDetachMem_IMPL;
-#endif
-
-    // memoryfabricCtrlGetNumAttachedMem -- exported (id=0xf80105)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x118u)
-    pThis->__memoryfabricCtrlGetNumAttachedMem__ = &memoryfabricCtrlGetNumAttachedMem_IMPL;
-#endif
-
-    // memoryfabricCtrlGetPageLevelInfo -- exported (id=0xf80107)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x110u)
-    pThis->__memoryfabricCtrlGetPageLevelInfo__ = &memoryfabricCtrlGetPageLevelInfo_IMPL;
-#endif
-} // End __nvoc_init_funcTable_MemoryFabric_1 with approximately 6 basic block(s).
+} // End __nvoc_init_funcTable_MemoryFabric_1
 
 
-// Initialize vtable(s) for 33 virtual method(s).
+// Initialize vtable(s) for 27 virtual method(s).
 void __nvoc_init_funcTable_MemoryFabric(MemoryFabric *pThis) {
-
-    // Initialize vtable(s) with 6 per-object function pointer(s).
     __nvoc_init_funcTable_MemoryFabric_1(pThis);
 }
 
@@ -592,16 +562,25 @@ void __nvoc_init__MemoryFabric(MemoryFabric *pThis) {
     __nvoc_init_funcTable_MemoryFabric(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_MemoryFabric(MemoryFabric **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams)
+NV_STATUS __nvoc_objCreate_MemoryFabric(MemoryFabric **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     MemoryFabric *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(MemoryFabric), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(MemoryFabric));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(MemoryFabric));
@@ -619,6 +598,7 @@ NV_STATUS __nvoc_objCreate_MemoryFabric(MemoryFabric **ppThis, Dynamic *pParent,
         pThis->__nvoc_base_Memory.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__MemoryFabric(pThis);
     status = __nvoc_ctor_MemoryFabric(pThis, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_objCreate_MemoryFabric_cleanup;
@@ -626,31 +606,35 @@ NV_STATUS __nvoc_objCreate_MemoryFabric(MemoryFabric **ppThis, Dynamic *pParent,
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_MemoryFabric_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Memory.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(MemoryFabric));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_MemoryFabric(MemoryFabric **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    CALL_CONTEXT * arg_pCallContext = va_arg(args, CALL_CONTEXT *);
-    struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
+    CALL_CONTEXT *arg_pCallContext = va_arg(args, CALL_CONTEXT *);
+    struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
 
     status = __nvoc_objCreate_MemoryFabric(ppThis, pParent, createFlags, arg_pCallContext, arg_pParams);
 

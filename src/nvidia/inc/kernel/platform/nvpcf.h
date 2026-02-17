@@ -25,6 +25,7 @@
 #define NVPCF_H
 
 #include "ctrl/ctrl0000/ctrl0000system.h"
+#include "controller/sbios_table_version.h"
 
 /*
  * Definitions for the static  params table.
@@ -74,16 +75,6 @@ typedef struct
 #define NVPCF_SYSDEV_STATIC_TABLE_COMMON_2X_PARAM0_CPU_TYPE_NVIDIA  (0x00000002)
 #define NVPCF_SYSDEV_STATIC_TABLE_COMMON_2X_PARAM0_GPU_TYPE                  7:4
 #define NVPCF_SYSDEV_STATIC_TABLE_COMMON_2X_PARAM0_GPU_TYPE_NVIDIA  (0x00000000)
-
-/*!
- * Layout of Controller 2x data used for static config
- */
-#define NVPCF_CONTROLLER_STATIC_TABLE_VERSION_20                          (0x20)
-#define NVPCF_CONTROLLER_STATIC_TABLE_VERSION_21                          (0x21)
-#define NVPCF_CONTROLLER_STATIC_TABLE_VERSION_22                          (0x22)
-#define NVPCF_CONTROLLER_STATIC_TABLE_VERSION_23                          (0x23)
-#define NVPCF_CONTROLLER_STATIC_TABLE_VERSION_24                          (0x24)
-#define NVPCF_CONTROLLER_STATIC_TABLE_MAX_ENTRIES                         (8)
 
 // format for 2.0 and 2.1
 #define NVPCF_CONTROLLER_STATIC_TABLE_HEADER_V20_SIZE_05                 (0x05U)
@@ -184,8 +175,9 @@ typedef struct
 #define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V20_FILTER_RESERVED                   31:16
 
 // Param0
-#define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V20_PARAM0_QBOOST_INCREASE_GAIN        15:0
+#define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V20_PARAM0_QBOOST_INCREASE_GAIN       15:0
 #define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V20_PARAM0_QBOOST_DECREASE_GAIN       31:16
+#define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V25_PARAM0_CPU_TDP_TYPE               4:1
 
 // Param1
 #define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V20_PARAM1_QBOOST_DC_SUPPORT            0:0
@@ -195,6 +187,10 @@ typedef struct
 #define NVPCF_CONTROLLER_STATIC_TABLE_HEADER_V22_FMT_SIZE_04              ("4b")
 #define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V22_SIZE_05                  (0x05U)
 #define NVPCF_CONTROLLER_STATIC_TABLE_ENTRY_V22_FMT_SIZE_05             ("1b1d")
+
+// Param0
+#define NVPCF_CONTROLLER_SBIOS_TABLE_CPU_TDP_CONTROL_DC_ONLY              (0x00)
+#define NVPCF_CONTROLLER_SBIOS_TABLE_CPU_TDP_CONTROL_DC_AC                (0x01)
 
 /*!
  * Static system controller header table v2.2, unpacked

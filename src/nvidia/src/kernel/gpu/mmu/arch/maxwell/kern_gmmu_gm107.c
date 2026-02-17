@@ -28,6 +28,7 @@
 #include "vgpu/rpc.h"
 
 #include "published/maxwell/gm107/dev_fb.h"
+#include "published/maxwell/gm107/dev_hubmmu_base_addendum.h"
 #include "published/maxwell/gm107/dev_mmu.h"
 
 /*!
@@ -69,9 +70,9 @@ kgmmuCommitInvalidateTlbTest_GM107
                                                             &params.timeout));
 
     // Invalidate all VA and PDB
-    regVal = DRF_DEF(_PFB_PRI, _MMU_INVALIDATE, _ALL_VA, _TRUE) |
-             DRF_DEF(_PFB_PRI, _MMU_INVALIDATE, _ALL_PDB, _TRUE) |
-             DRF_DEF(_PFB_PRI, _MMU_INVALIDATE, _TRIGGER, _TRUE);
+    regVal = DRF_DEF(_HUBMMU, _PRI_MMU_INVALIDATE, _ALL_VA, _TRUE) |
+             DRF_DEF(_HUBMMU, _PRI_MMU_INVALIDATE, _ALL_PDB, _TRUE) |
+             DRF_DEF(_HUBMMU, _PRI_MMU_INVALIDATE, _TRIGGER, _TRUE);
 
     params.regVal = regVal;
 
@@ -181,24 +182,24 @@ kgmmuInvalidateTlb_GM107
     }
 
     // Trigger an invalidate.
-    params.regVal = FLD_SET_DRF(_PFB_PRI, _MMU_INVALIDATE, _TRIGGER, _TRUE, params.regVal);
+    params.regVal = FLD_SET_DRF(_HUBMMU, _PRI_MMU_INVALIDATE, _TRIGGER, _TRUE, params.regVal);
 
     // Not using range-based invalidate.
-    params.regVal = FLD_SET_DRF(_PFB_PRI, _MMU_INVALIDATE, _ALL_VA, _TRUE, params.regVal);
+    params.regVal = FLD_SET_DRF(_HUBMMU, _PRI_MMU_INVALIDATE, _ALL_VA, _TRUE, params.regVal);
 
     if (NULL != pRootPageDir)
     {
         // Invalidatating only one VAS.
-        params.regVal = FLD_SET_DRF(_PFB_PRI, _MMU_INVALIDATE, _ALL_PDB, _FALSE, params.regVal);
+        params.regVal = FLD_SET_DRF(_HUBMMU, _PRI_MMU_INVALIDATE, _ALL_PDB, _FALSE, params.regVal);
 
         // Setup PDB of VAS to invalidate.
         if (memdescGetAddressSpace(pRootPageDir) == ADDR_FBMEM)
         {
-            params.pdbAperture = NV_PFB_PRI_MMU_INVALIDATE_PDB_APERTURE_VID_MEM;
+            params.pdbAperture = NV_HUBMMU_PRI_MMU_INVALIDATE_PDB_APERTURE_VID_MEM;
         }
         else if (memdescGetAddressSpace(pRootPageDir) == ADDR_SYSMEM)
         {
-            params.pdbAperture = NV_PFB_PRI_MMU_INVALIDATE_PDB_APERTURE_SYS_MEM;
+            params.pdbAperture = NV_HUBMMU_PRI_MMU_INVALIDATE_PDB_APERTURE_SYS_MEM;
         }
         else
         {
@@ -210,7 +211,7 @@ kgmmuInvalidateTlb_GM107
     else
     {
         // Invalidate *ALL* address spaces.
-        params.regVal = FLD_SET_DRF(_PFB_PRI, _MMU_INVALIDATE, _ALL_PDB, _TRUE, params.regVal);
+        params.regVal = FLD_SET_DRF(_HUBMMU, _PRI_MMU_INVALIDATE, _ALL_PDB, _TRUE, params.regVal);
         // Override invalidation scope.
         invalidation_scope = NV_GMMU_INVAL_SCOPE_ALL_TLBS;
     }
@@ -218,7 +219,7 @@ kgmmuInvalidateTlb_GM107
     // For host VAS (e.g. BAR) we do not have to invalidate GR.
     if (vaspaceFlags & VASPACE_FLAGS_BAR)
     {
-        params.regVal = FLD_SET_DRF(_PFB_PRI, _MMU_INVALIDATE, _HUBTLB_ONLY, _TRUE, params.regVal);
+        params.regVal = FLD_SET_DRF(_HUBMMU, _PRI_MMU_INVALIDATE, _HUBTLB_ONLY, _TRUE, params.regVal);
     }
 
     // Perform membarWAR for non-BAR2 pte downgrades.
@@ -299,30 +300,6 @@ kgmmuDetermineMaxVASize_GM107
         break;
         default:
             pKernelGmmu->maxVASize = 1ULL << 40;
-    }
-}
-
-/*
- * @brief Checks the system memory address against the PA capabilities of the
- *        GMMU.
- */
-void
-kgmmuEncodeSysmemAddrs_GM107
-(
-    KernelGmmu *pKernelGmmu,
-    NvU64      *pAddresses,
-    NvU64       count
-)
-{
-    OBJGPU     *pGpu    = ENG_GET_GPU(pKernelGmmu);
-    const NvU32 paWidth = gpuGetPhysAddrWidth_HAL(pGpu, ADDR_SYSMEM);
-    NvU64 i;
-
-    for (i = 0; i < count; ++i)
-    {
-        NvU64 address = pAddresses[i];
-
-        NV_ASSERT(address <= (NVBIT64(paWidth) - 1));
     }
 }
 

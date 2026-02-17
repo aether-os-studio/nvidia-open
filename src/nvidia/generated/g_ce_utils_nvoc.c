@@ -80,6 +80,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__CeUtils =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_ceutilsDestruct(CeUtils*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_CeUtils(CeUtils *pThis) {
     __nvoc_ceutilsDestruct(pThis);
@@ -139,16 +140,25 @@ void __nvoc_init__CeUtils(CeUtils *pThis) {
     __nvoc_init_funcTable_CeUtils(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_CeUtils(CeUtils **ppThis, Dynamic *pParent, NvU32 createFlags, struct OBJGPU * arg_pGpu, KERNEL_MIG_GPU_INSTANCE * arg_pKernelMIGGPUInstance, NV0050_ALLOCATION_PARAMETERS * arg_pAllocParams)
+NV_STATUS __nvoc_objCreate_CeUtils(CeUtils **ppThis, Dynamic *pParent, NvU32 createFlags, struct OBJGPU *arg_pGpu, KERNEL_MIG_GPU_INSTANCE *arg_pKernelMIGGPUInstance, NV0050_ALLOCATION_PARAMETERS *arg_pAllocParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     CeUtils *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(CeUtils), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(CeUtils));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(CeUtils));
@@ -166,6 +176,7 @@ NV_STATUS __nvoc_objCreate_CeUtils(CeUtils **ppThis, Dynamic *pParent, NvU32 cre
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__CeUtils(pThis);
     status = __nvoc_ctor_CeUtils(pThis, arg_pGpu, arg_pKernelMIGGPUInstance, arg_pAllocParams);
     if (status != NV_OK) goto __nvoc_objCreate_CeUtils_cleanup;
@@ -173,32 +184,36 @@ NV_STATUS __nvoc_objCreate_CeUtils(CeUtils **ppThis, Dynamic *pParent, NvU32 cre
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_CeUtils_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(CeUtils));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_CeUtils(CeUtils **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    struct OBJGPU * arg_pGpu = va_arg(args, struct OBJGPU *);
-    KERNEL_MIG_GPU_INSTANCE * arg_pKernelMIGGPUInstance = va_arg(args, KERNEL_MIG_GPU_INSTANCE *);
-    NV0050_ALLOCATION_PARAMETERS * arg_pAllocParams = va_arg(args, NV0050_ALLOCATION_PARAMETERS *);
+    struct OBJGPU *arg_pGpu = va_arg(args, struct OBJGPU *);
+    KERNEL_MIG_GPU_INSTANCE *arg_pKernelMIGGPUInstance = va_arg(args, KERNEL_MIG_GPU_INSTANCE *);
+    NV0050_ALLOCATION_PARAMETERS *arg_pAllocParams = va_arg(args, NV0050_ALLOCATION_PARAMETERS *);
 
     status = __nvoc_objCreate_CeUtils(ppThis, pParent, createFlags, arg_pGpu, arg_pKernelMIGGPUInstance, arg_pAllocParams);
 
@@ -312,17 +327,19 @@ const struct NVOC_CLASS_DEF __nvoc_class_def_CeUtilsApi =
     /*pExportInfo=*/        &__nvoc_export_info__CeUtilsApi
 };
 
+// By default, all exported methods are enabled.
 #if !defined(NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG)
 #define NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(x)      (0)
 #endif
 
+// Exported method array
 static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_CeUtilsApi[] = 
 {
     {               /*  [0] */
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) ceutilsapiCtrlCmdMemset_IMPL,
+        /*pFunc=*/      (void (*)(void)) &ceutilsapiCtrlCmdMemset_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*flags=*/      0x104u,
         /*accessRight=*/0x0u,
@@ -337,7 +354,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_CeUtilsA
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) ceutilsapiCtrlCmdMemcopy_IMPL,
+        /*pFunc=*/      (void (*)(void)) &ceutilsapiCtrlCmdMemcopy_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*flags=*/      0x104u,
         /*accessRight=*/0x0u,
@@ -352,7 +369,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_CeUtilsA
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) ceutilsapiCtrlCmdCheckProgress_IMPL,
+        /*pFunc=*/      (void (*)(void)) &ceutilsapiCtrlCmdCheckProgress_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
         /*flags=*/      0x104u,
         /*accessRight=*/0x0u,
@@ -363,7 +380,6 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_CeUtilsA
         /*func=*/       "ceutilsapiCtrlCmdCheckProgress"
 #endif
     },
-
 };
 
 
@@ -627,6 +643,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__CeUtilsApi =
     /*pExportEntries=*/ __nvoc_exported_method_def_CeUtilsApi
 };
 
+void __nvoc_ceutilsapiDestruct(CeUtilsApi*);
 void __nvoc_dtor_GpuResource(GpuResource*);
 void __nvoc_dtor_CeUtilsApi(CeUtilsApi *pThis) {
     __nvoc_ceutilsapiDestruct(pThis);
@@ -660,28 +677,11 @@ __nvoc_ctor_CeUtilsApi_exit:
 // Vtable initialization
 static void __nvoc_init_funcTable_CeUtilsApi_1(CeUtilsApi *pThis) {
     PORT_UNREFERENCED_VARIABLE(pThis);
-
-    // ceutilsapiCtrlCmdMemset -- exported (id=0x500101)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
-    pThis->__ceutilsapiCtrlCmdMemset__ = &ceutilsapiCtrlCmdMemset_IMPL;
-#endif
-
-    // ceutilsapiCtrlCmdMemcopy -- exported (id=0x500102)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
-    pThis->__ceutilsapiCtrlCmdMemcopy__ = &ceutilsapiCtrlCmdMemcopy_IMPL;
-#endif
-
-    // ceutilsapiCtrlCmdCheckProgress -- exported (id=0x500103)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x104u)
-    pThis->__ceutilsapiCtrlCmdCheckProgress__ = &ceutilsapiCtrlCmdCheckProgress_IMPL;
-#endif
-} // End __nvoc_init_funcTable_CeUtilsApi_1 with approximately 3 basic block(s).
+} // End __nvoc_init_funcTable_CeUtilsApi_1
 
 
-// Initialize vtable(s) for 28 virtual method(s).
+// Initialize vtable(s) for 25 virtual method(s).
 void __nvoc_init_funcTable_CeUtilsApi(CeUtilsApi *pThis) {
-
-    // Initialize vtable(s) with 3 per-object function pointer(s).
     __nvoc_init_funcTable_CeUtilsApi_1(pThis);
 }
 
@@ -711,16 +711,25 @@ void __nvoc_init__CeUtilsApi(CeUtilsApi *pThis) {
     __nvoc_init_funcTable_CeUtilsApi(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams)
+NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     CeUtilsApi *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(CeUtilsApi), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(CeUtilsApi));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(CeUtilsApi));
@@ -738,6 +747,7 @@ NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi **ppThis, Dynamic *pParent, NvU
         pThis->__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__CeUtilsApi(pThis);
     status = __nvoc_ctor_CeUtilsApi(pThis, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_objCreate_CeUtilsApi_cleanup;
@@ -745,31 +755,35 @@ NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi **ppThis, Dynamic *pParent, NvU
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_CeUtilsApi_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(CeUtilsApi));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_CeUtilsApi(CeUtilsApi **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    CALL_CONTEXT * arg_pCallContext = va_arg(args, CALL_CONTEXT *);
-    struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
+    CALL_CONTEXT *arg_pCallContext = va_arg(args, CALL_CONTEXT *);
+    struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
 
     status = __nvoc_objCreate_CeUtilsApi(ppThis, pParent, createFlags, arg_pCallContext, arg_pParams);
 

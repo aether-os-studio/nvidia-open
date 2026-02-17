@@ -254,7 +254,7 @@ kchangrpapiConstruct_IMPL
         // RM reserved heap. This avoids a constant memory allocation from appearing
         // due to the ctxBufPool reservation out of PMA.
         //
-        if ((pRmClient == NULL) || !(pRmClient->Flags & RMAPI_CLIENT_FLAG_RM_INTERNAL_CLIENT))
+        if ((pRmClient == NULL) || !serverIsClientInternal(&g_resServ, pParams->hClient))
         {
             NV_ASSERT_OK_OR_GOTO(rmStatus,
                 ctxBufPoolInit(pGpu, pHeap, &pKernelChannelGroup->pCtxBufPool),
@@ -559,7 +559,7 @@ done:
         if (rmStatus != NV_OK)
         {
             // Acquire the lock again for the cleanup path
-            NV_ASSERT_OK_OR_RETURN(rmGpuLocksAcquire(GPUS_LOCK_FLAGS_NONE, RM_LOCK_MODULES_FIFO));
+            NV_ASSERT_OK_OR_RETURN(rmDeviceGpuLocksAcquire(pGpu, GPUS_LOCK_FLAGS_NONE, RM_LOCK_MODULES_FIFO));
             bLockAcquired = NV_TRUE;
             goto failed;
         }

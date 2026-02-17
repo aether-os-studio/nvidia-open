@@ -95,17 +95,19 @@ const struct NVOC_CLASS_DEF __nvoc_class_def_MemoryFabricImportedRef =
     /*pExportInfo=*/        &__nvoc_export_info__MemoryFabricImportedRef
 };
 
+// By default, all exported methods are enabled.
 #if !defined(NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG)
 #define NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(x)      (0)
 #endif
 
+// Exported method array
 static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFabricImportedRef[] = 
 {
     {               /*  [0] */
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x10bu)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memoryfabricimportedrefCtrlValidate_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memoryfabricimportedrefCtrlValidate_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x10bu)
         /*flags=*/      0x10bu,
         /*accessRight=*/0x0u,
@@ -116,7 +118,6 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryFa
         /*func=*/       "memoryfabricimportedrefCtrlValidate"
 #endif
     },
-
 };
 
 
@@ -330,6 +331,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__MemoryFabricImportedRef =
     /*pExportEntries=*/ __nvoc_exported_method_def_MemoryFabricImportedRef
 };
 
+void __nvoc_memoryfabricimportedrefDestruct(MemoryFabricImportedRef*);
 void __nvoc_dtor_RmResource(RmResource*);
 void __nvoc_dtor_MemoryFabricImportedRef(MemoryFabricImportedRef *pThis) {
     __nvoc_memoryfabricimportedrefDestruct(pThis);
@@ -363,18 +365,11 @@ __nvoc_ctor_MemoryFabricImportedRef_exit:
 // Vtable initialization
 static void __nvoc_init_funcTable_MemoryFabricImportedRef_1(MemoryFabricImportedRef *pThis) {
     PORT_UNREFERENCED_VARIABLE(pThis);
-
-    // memoryfabricimportedrefCtrlValidate -- exported (id=0xfb0101)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x10bu)
-    pThis->__memoryfabricimportedrefCtrlValidate__ = &memoryfabricimportedrefCtrlValidate_IMPL;
-#endif
-} // End __nvoc_init_funcTable_MemoryFabricImportedRef_1 with approximately 1 basic block(s).
+} // End __nvoc_init_funcTable_MemoryFabricImportedRef_1
 
 
-// Initialize vtable(s) for 22 virtual method(s).
+// Initialize vtable(s) for 21 virtual method(s).
 void __nvoc_init_funcTable_MemoryFabricImportedRef(MemoryFabricImportedRef *pThis) {
-
-    // Initialize vtable(s) with 1 per-object function pointer(s).
     __nvoc_init_funcTable_MemoryFabricImportedRef_1(pThis);
 }
 
@@ -402,16 +397,25 @@ void __nvoc_init__MemoryFabricImportedRef(MemoryFabricImportedRef *pThis) {
     __nvoc_init_funcTable_MemoryFabricImportedRef(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_MemoryFabricImportedRef(MemoryFabricImportedRef **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams)
+NV_STATUS __nvoc_objCreate_MemoryFabricImportedRef(MemoryFabricImportedRef **ppThis, Dynamic *pParent, NvU32 createFlags, CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     MemoryFabricImportedRef *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(MemoryFabricImportedRef), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(MemoryFabricImportedRef));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(MemoryFabricImportedRef));
@@ -429,6 +433,7 @@ NV_STATUS __nvoc_objCreate_MemoryFabricImportedRef(MemoryFabricImportedRef **ppT
         pThis->__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__MemoryFabricImportedRef(pThis);
     status = __nvoc_ctor_MemoryFabricImportedRef(pThis, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_objCreate_MemoryFabricImportedRef_cleanup;
@@ -436,31 +441,35 @@ NV_STATUS __nvoc_objCreate_MemoryFabricImportedRef(MemoryFabricImportedRef **ppT
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_MemoryFabricImportedRef_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(MemoryFabricImportedRef));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_MemoryFabricImportedRef(MemoryFabricImportedRef **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    CALL_CONTEXT * arg_pCallContext = va_arg(args, CALL_CONTEXT *);
-    struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
+    CALL_CONTEXT *arg_pCallContext = va_arg(args, CALL_CONTEXT *);
+    struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
 
     status = __nvoc_objCreate_MemoryFabricImportedRef(ppThis, pParent, createFlags, arg_pCallContext, arg_pParams);
 

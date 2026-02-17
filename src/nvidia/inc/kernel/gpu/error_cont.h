@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -175,9 +175,9 @@ typedef struct _NV_ERROR_CONT_LOCATION
                                             "MMU",               \
                                             "GCC",               \
                                             "CTXSW",             \
-                                            "PCIE",              \
-                                            "PCIE",              \
-                                            "PCIE",              \
+                                            "PCIE Egress",       \
+                                            "PCIE Ingress",      \
+                                            "PCIE Ingress",      \
                                             "PMU",               \
                                             "SEC2",              \
                                             "GSP",               \

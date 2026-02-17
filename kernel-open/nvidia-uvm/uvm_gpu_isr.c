@@ -183,7 +183,7 @@ static unsigned schedule_access_counters_handler(uvm_parent_gpu_t *parent_gpu, N
     nv_kref_get(&parent_gpu->gpu_kref);
 
     // Interrupts need to be disabled to avoid an interrupt storm
-    uvm_access_counters_intr_disable(&parent_gpu->access_counter_buffer[notif_buf_index]);
+    uvm_access_counters_intr_disable(&parent_gpu->access_counters.buffer[notif_buf_index]);
 
     nv_kthread_q_schedule_q_item(&parent_gpu->isr.bottom_half_q,
                                  &parent_gpu->isr.access_counters[notif_buf_index].bottom_half_q_item);
@@ -287,14 +287,14 @@ NV_STATUS uvm_isr_top_half_entry(const NvProcessorUuid *gpu_uuid)
 static NV_STATUS init_queue_on_node(nv_kthread_q_t *queue, const char *name, int node)
 {
 #if UVM_THREAD_AFFINITY_SUPPORTED()
-    if (node != -1 && !cpumask_empty(uvm_cpumask_of_node(node))) {
+    if (node != -1 && !cpumask_empty(cpumask_of_node(node))) {
         NV_STATUS status;
 
         status = errno_to_nv_status(nv_kthread_q_init_on_node(queue, name, node));
         if (status != NV_OK)
             return status;
 
-        return errno_to_nv_status(set_cpus_allowed_ptr(queue->q_kthread, uvm_cpumask_of_node(node)));
+        return errno_to_nv_status(set_cpus_allowed_ptr(queue->q_kthread, cpumask_of_node(node)));
     }
 #endif
 
@@ -327,12 +327,12 @@ static NV_STATUS uvm_isr_init_access_counters(uvm_parent_gpu_t *parent_gpu, NvU3
     if (!block_context)
         return NV_ERR_NO_MEMORY;
 
-    parent_gpu->access_counter_buffer[notif_buf_index].batch_service_context.block_service_context.block_context =
+    parent_gpu->access_counters.buffer[notif_buf_index].batch_service_context.block_service_context.block_context =
         block_context;
 
     nv_kthread_q_item_init(&parent_gpu->isr.access_counters[notif_buf_index].bottom_half_q_item,
                            access_counters_isr_bottom_half_entry,
-                           &parent_gpu->access_counter_buffer[notif_buf_index]);
+                           &parent_gpu->access_counters.buffer[notif_buf_index]);
 
     // Access counters interrupts are initially disabled. They are
     // dynamically enabled when the GPU is registered on a VA space.
@@ -431,9 +431,9 @@ NV_STATUS uvm_parent_gpu_init_isr(uvm_parent_gpu_t *parent_gpu)
             if (uvm_enable_builtin_tests && parent_gpu->test.access_counters_alloc_buffer)
                 return NV_ERR_NO_MEMORY;
 
-            parent_gpu->access_counter_buffer = uvm_kvmalloc_zero(sizeof(*parent_gpu->access_counter_buffer) *
-                                                                  index_count);
-            if (!parent_gpu->access_counter_buffer)
+            parent_gpu->access_counters.buffer = uvm_kvmalloc_zero(sizeof(*parent_gpu->access_counters.buffer) *
+                                                                   index_count);
+            if (!parent_gpu->access_counters.buffer)
                 return NV_ERR_NO_MEMORY;
 
             if (uvm_enable_builtin_tests && parent_gpu->test.isr_access_counters_alloc)
@@ -535,8 +535,8 @@ void uvm_parent_gpu_deinit_isr(uvm_parent_gpu_t *parent_gpu)
             // been successfully initialized.
             uvm_parent_gpu_deinit_access_counters(parent_gpu, notif_buf_index);
 
-            if (parent_gpu->access_counter_buffer) {
-                uvm_access_counter_buffer_t *access_counter = &parent_gpu->access_counter_buffer[notif_buf_index];
+            if (parent_gpu->access_counters.buffer) {
+                uvm_access_counter_buffer_t *access_counter = &parent_gpu->access_counters.buffer[notif_buf_index];
                 block_context = access_counter->batch_service_context.block_service_context.block_context;
                 uvm_va_block_context_free(block_context);
             }
@@ -546,7 +546,7 @@ void uvm_parent_gpu_deinit_isr(uvm_parent_gpu_t *parent_gpu)
         }
 
         uvm_kvfree(parent_gpu->isr.access_counters);
-        uvm_kvfree(parent_gpu->access_counter_buffer);
+        uvm_kvfree(parent_gpu->access_counters.buffer);
     }
 
     if (parent_gpu->non_replayable_faults_supported) {

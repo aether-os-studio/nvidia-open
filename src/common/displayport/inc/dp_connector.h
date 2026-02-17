@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -288,6 +288,9 @@ namespace DisplayPort
 
         virtual bool getRawDscCaps(NvU8 *buffer, NvU32 bufferSize) = 0;
         virtual bool setRawDscCaps(const NvU8 *buffer, NvU32 bufferSize) = 0;
+        virtual bool setValidatedRawDscCaps(NvU8 *buffer, NvU32 bufferSize) = 0;
+        virtual bool validatePPSData(DSCPPSDATA *pPps) = 0;
+        virtual bool readAndParseDSCCaps() = 0;
 
         // This interface is still nascent. Please don't use it. Read size limit is 16 bytes.
         virtual AuxBus::status getDpcdData(unsigned offset, NvU8 * buffer,
@@ -331,6 +334,9 @@ namespace DisplayPort
         virtual bool isPanelReplaySupported() = 0;
         virtual bool getPanelReplayStatus(PanelReplayStatus *pPrStatus) = 0;
         virtual bool getDeviceSpecificData(NvU8 *oui, NvU8 *deviceIdString,
+                                           NvU8 *hwRevision, NvU8 *swMajorRevision,
+                                           NvU8 *swMinorRevision) = 0;
+        virtual bool getParentSpecificData(NvU8 *oui, NvU8 *deviceIdString,
                                            NvU8 *hwRevision, NvU8 *swMajorRevision,
                                            NvU8 *swMinorRevision) = 0;
 
@@ -436,6 +442,9 @@ namespace DisplayPort
 
         // Get the clock calculation supported by the GPU
         virtual unsigned getGpuDataClockMultiplier() = 0;
+
+        // Power Down the link
+        virtual void powerdownLink(bool bPowerdownPanel = false) = 0;
 
         // Resume from standby/initial boot notification
         //   The library is considered to start up in the suspended state.  You must make this
@@ -771,6 +780,10 @@ namespace DisplayPort
     virtual bool willLinkSupportModeSST(const LinkConfiguration &linkConfig,
                                         const ModesetInfo &modesetInfo,
                                         const DscParams *pDscParams = NULL) = 0;
+    virtual bool isDpInTunnelingSupported() = 0;
+    virtual bool isDpInTunnelingPanelReplayOptimizationSupported() = 0;
+    virtual bool isDpInTunnelingBwAllocationSupported() = 0;
+    virtual bool getUSBDpInAdapterInfo(NvU32 displayId, NV0073_CTRL_DP_USB4_INFO *pInfo) = 0;
 
     protected:
            virtual ~Connector() {}

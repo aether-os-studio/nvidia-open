@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1999-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1999-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -168,6 +168,8 @@ void       RmDeflateRmToOsPageArray (RmPhysAddr *, NvU64);
 void       RmInitPowerManagement    (nv_state_t *);
 void       RmDestroyPowerManagement (nv_state_t *);
 
+NV_STATUS  RmPowerManagementTegra   (OBJGPU *pGpu, nv_pm_action_t pmAction);
+
 NV_STATUS  os_ref_dynamic_power     (nv_state_t *, nv_dynamic_power_mode_t);
 void       os_unref_dynamic_power   (nv_state_t *, nv_dynamic_power_mode_t);
 void       RmHandleDisplayChange    (nvidia_stack_t *, nv_state_t *);
@@ -175,6 +177,8 @@ void       RmUpdateGc6ConsoleRefCount (nv_state_t *, NvBool);
 
 NvBool     rm_get_uefi_console_status (nv_state_t *);
 NvU64      rm_get_uefi_console_size (nv_state_t *, NvU64 *);
+
+void       rm_check_s0ix_regkey_and_platform_support(void);
 
 RM_API    *RmUnixRmApiPrologue      (nv_state_t *, THREAD_STATE_NODE *, NvU32 module);
 void       RmUnixRmApiEpilogue      (nv_state_t *, THREAD_STATE_NODE *);

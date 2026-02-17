@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -116,6 +116,34 @@ kbifRestorePcieConfigRegistersFn1_GB202
 }
 
 /*!
+ * @brief Check if access to PCI config space is enabled or not
+ *
+ * @param[in] pGpu        GPU object pointer
+ * @param[in] pKernelBif  Kernel BIF object pointer
+ *
+ * @return NV_TRUE Pci IO access is enabled
+ */
+NvBool
+kbifIsPciIoAccessEnabled_GB202
+(
+    OBJGPU    *pGpu,
+    KernelBif *pKernelBif
+)
+{
+    NvU32 data = 0;
+
+    if (GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_EP_PCFG_GPU_CTRL_CMD_AND_STATUS, &data) == NV_OK)
+    {
+        if (FLD_TEST_DRF(_EP_PCFG_GPU, _CTRL_CMD_AND_STATUS, _CMD_IO_SPACE, _ENABLE, data))
+        {
+            return NV_TRUE;
+        }
+    }
+
+    return NV_FALSE;
+}
+
+/*!
  * @brief Initialize LTR settings from config space
  *
  * param[in]  pGpu        GPU object pointer
@@ -177,6 +205,7 @@ kbifPollBarFirewallDisengage_GB202
 {
     RMTIMEOUT timeout;
     NvU32     val;
+    NV_STATUS status;
 
     //
     // Polling for CFG BAR firewall disenage
@@ -192,10 +221,24 @@ kbifPollBarFirewallDisengage_GB202
     gpuSetTimeout(pGpu, NV_MAX(gpuScaleTimeout(pGpu, 500000), pGpu->timeoutData.defaultus),
                   &timeout, GPU_TIMEOUT_FLAGS_OSTIMER | GPU_TIMEOUT_FLAGS_BYPASS_THREAD_STATE);
 
-    GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2, &val);
+    status = GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2, &val);
+    if (status != NV_OK)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+            "Unable to read NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2.\n");
+        return status;
+    }
+
     while (!FLD_TEST_DRF(_EP_PCFG_GPU, _VSEC_DEBUG_SEC_2, _BAR_FIREWALL_ENGAGE, _INIT, val))
     {
-        GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2, &val);
+        status = GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2, &val);
+        if (status != NV_OK)
+        {
+            NV_PRINTF(LEVEL_ERROR,
+                "Unable to read NV_EP_PCFG_GPU_VSEC_DEBUG_SEC_2.\n");
+            return status;
+        }
+
         if (gpuCheckTimeout(pGpu, &timeout) == NV_ERR_TIMEOUT)
         {
             NV_PRINTF(LEVEL_ERROR, "Timeout polling CFG BAR firewall disengage.\n");

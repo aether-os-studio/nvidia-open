@@ -407,6 +407,11 @@
 //      Operations allowed while holding this lock
 //      - Pushing work to SEC2 channels
 //
+// - Access counters clear operations
+//     Order: UVM_LOCK_ACCESS_COUNTERS_CLEAR_OPS
+//
+//     It protects the parent_gpu's access counters clear tracker.
+//
 // - Concurrent push semaphore
 //      Order: UVM_LOCK_ORDER_PUSH
 //      Semaphore (uvm_semaphore_t)
@@ -477,7 +482,7 @@
 //
 //      CE semaphore payloads are encrypted, and require to take the CSL lock
 //      (UVM_LOCK_ORDER_LEAF) to decrypt the payload.
-
+//
 // - CSL Context
 //      Order: UVM_LOCK_ORDER_CSL_CTX
 //      When the Confidential Computing feature is enabled, encrypt/decrypt
@@ -519,6 +524,7 @@ typedef enum
     UVM_LOCK_ORDER_KEY_ROTATION_WLC,
     UVM_LOCK_ORDER_CSL_WLC_PUSH,
     UVM_LOCK_ORDER_CSL_SEC2_PUSH,
+    UVM_LOCK_ACCESS_COUNTERS_CLEAR_OPS,
     UVM_LOCK_ORDER_PUSH,
     UVM_LOCK_ORDER_PMM,
     UVM_LOCK_ORDER_PMM_PMA,

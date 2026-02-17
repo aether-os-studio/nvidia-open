@@ -403,6 +403,7 @@ vgpuconfigapiCtrlCmdVgpuConfigEnumerateVgpuPerPgpu_IMPL
         portMemCopy(pVgpuGuest->vgpuDevice.vgpuUuid, VGPU_UUID_SIZE, pKernelHostVgpuDevice->vgpuUuid, VGPU_UUID_SIZE);
 
         pVgpuGuest->vgpuDevice.vgpuPciId = pVgpuGuestGsp->vgpuDevice.vgpuPciId;
+        pVgpuGuest->vgpuDevice.accountingPid = pVgpuGuestGsp->vgpuDevice.accountingPid;
     }
 
     pParams->numVgpu  = pPhysGpuInfo->numActiveVgpu;
@@ -525,6 +526,7 @@ vgpuconfigapiCtrlCmdVgpuConfigGetVgpuTypeInfo_IMPL
     pParams->vgpuTypeInfo.multiVgpuExclusive = vgpuTypeInfo->multiVgpuExclusive;
     pParams->vgpuTypeInfo.frlEnable          = vgpuTypeInfo->frlEnable;
     pParams->vgpuTypeInfo.multiVgpuSupported = vgpuTypeInfo->multiVgpuSupported;
+    pParams->vgpuTypeInfo.vgpuSsvid          = vgpuMgrGetVgpuSsvid(pGpu);
 
     /* Represents vGPU type level support for heterogeneous timeslice profiles */
     pParams->vgpuTypeInfo.exclusiveType      = !kvgpumgrIsHeterogeneousVgpuTypeSupported();
@@ -667,13 +669,14 @@ vgpuconfigapiCtrlCmdVgpuConfigGetSupportedVgpuTypes_IMPL
     for (i = 0; i < pPgpuInfo->numVgpuTypes; i++)
     {
         pVgpuTypeInfo = pPgpuInfo->vgpuTypes[i];
-        if (!kvgpumgrIsMigTimeslicingModeEnabled(pGpu))
+        if (pVgpuTypeInfo == NULL)
+        {
+            continue;
+        }
+        if ((!kvgpumgrIsMigTimeslicingModeEnabled(pGpu)) && (pVgpuTypeInfo->maxInstancePerGI > 1))
         {
             // If MIG-timeslicing mode is disabled on a timeslicing supported GPU, ignore timesliced vGPU types.
-            if (pVgpuTypeInfo->maxInstancePerGI > 1)
-            {
-                continue;
-            }
+            continue;
         }
         pParams->vgpuTypes[numVgpuTypes] = pVgpuTypeInfo->vgpuTypeId;
         numVgpuTypes++;
@@ -909,6 +912,14 @@ vgpuconfigapiCtrlCmdVgpuConfigSetCapability_IMPL
         {
             if (pGpu->getProperty(pGpu, PDB_PROP_GPU_MIG_TIMESLICING_SUPPORTED))
             {
+                NV2080_CTRL_VGPU_MGR_INTERNAL_SET_VGPU_MIG_TIMESLICE_MODE_PARAMS params = {0};
+                RM_API *pRmApi = GPU_GET_PHYSICAL_RMAPI(pGpu);
+
+                params.bMigTimeslicingModeEnabled = pSetCapabilityParams->state;
+                NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                    pRmApi->Control(pRmApi, pGpu->hInternalClient, pGpu->hInternalSubdevice,
+                                    NV2080_CTRL_CMD_VGPU_MGR_INTERNAL_SET_VGPU_MIG_TIMESLICE_MODE,
+                                    &params, sizeof(params)));
                 pPhysGpuInfo->migTimeslicingModeEnabled = pSetCapabilityParams->state;
             }
             else
@@ -1306,6 +1317,7 @@ vgpuconfigapiCtrlCmdVgpuConfigGetFreeSwizzId_IMPL
         NV_ASSERT_OK_OR_RETURN(
             kvgpumgrGetVgpuTypeInfo(pParams->vgpuTypeId, &vgpuTypeInfo));
 
+        pParams->swizzId = KMIGMGR_SWIZZID_INVALID;
         NV_ASSERT_OK_OR_RETURN(
             kvgpumgrGetSwizzId(pGpu, pPhysGpuInfo, partitionFlag, vgpuTypeInfo, &pParams->swizzId));
     }

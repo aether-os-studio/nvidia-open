@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2016-2024 NVIDIA Corporation
+    Copyright (c) 2016-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -111,11 +111,15 @@ struct uvm_user_channel_struct
     // channel removal
     uvm_tracker_t clear_faulted_tracker;
 
-    // Address of the NV_CHRAM_CHANNEL register and the runlist PRI base
-    // register. Only valid on GPUs with
+    // Address of the NV_CHRAM_CHANNEL register. Only valid on GPUs with
     // non_replayable_faults_supported && !has_clear_faulted_channel_method.
     volatile NvU32 *chram_channel_register;
-    volatile NvU32 *runlist_pri_base_register;
+
+    // Address of the channel's doorbell.
+    volatile NvU32 *work_submission_offset;
+
+    // The value that is used when ringing the channel's doorbell.
+    NvU32 work_submission_token;
 
     // Id of the SMC engine this channel is bound to, or zero if the GPU
     // does not support SMC or it is a CE channel

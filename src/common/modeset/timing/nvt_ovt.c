@@ -32,9 +32,8 @@
 #include "nvmisc.h"
 
 #include "nvtiming_pvt.h"
-
+ 
 PUSH_SEGMENTS
-
 CONS_SEGMENT(PAGE_CONS)
 
 const NvU32 NVT_OVT_PIXEL_CLOCK_GRANULARITY  = 1000;      // Resulting Pixel Clock will be a multiple of this
@@ -58,20 +57,6 @@ CODE_SEGMENT(PAGE_DD_CODE)
 static NvU32 nvFloorPow2_U32(NvU32 x)
 {
     return x & ~(x - 1);
-}
-
-CODE_SEGMENT(PAGE_DD_CODE)
-static NvU32 computeGCD(NvU32 a, NvU32 b)
-{
-    NvU32 temp;
-    while (b != 0)
-    {
-        temp = a % b;
-        if (temp == 0) return b;
-        a = b;
-        b = temp;
-    }
-    return a;
 }
 
 CODE_SEGMENT(PAGE_DD_CODE)
@@ -290,6 +275,30 @@ NvBool NvTiming_IsTimingOVT(const NVT_TIMING *pTiming)
         return NV_TRUE;
     }
     return NV_FALSE;
+}
+
+CODE_SEGMENT(PAGE_DD_CODE)
+NvU32 computeGCD(NvU32 a, NvU32 b)
+{
+    NvU32 temp;
+    while (b != 0)
+    {
+        temp = a % b;
+        if (temp == 0) return b;
+        a = b;
+        b = temp;
+    }
+    return a;
+}
+
+CODE_SEGMENT(PAGE_DD_CODE)
+NvU32 computeLCM(NvU32 a, NvU32 b)
+{
+    if (a == 0 || b == 0)
+    {
+        return 0;
+    }
+    return (a / computeGCD(a, b)) * b;
 }
 
 POP_SEGMENTS

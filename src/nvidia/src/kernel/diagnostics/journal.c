@@ -275,7 +275,7 @@ rcdbConstruct_IMPL(Journal *pRcDB)
      // Save params for timestamp conversion
      timeStampFreq = osGetTimestampFreq();
      timeStamp = osGetTimestamp();
-     osGetCurrentTime(&sec, &usec);
+     osGetSystemTime(&sec, &usec);
      systemTime = ((NvU64)sec * 1000000) + (NvU64)usec;
 
      pRcDB->systemTimeReference = systemTime - ((timeStamp * 1000000) / timeStampFreq);
@@ -767,7 +767,7 @@ rcdbAddRcDiagRec_IMPL
         pRmDiagWrapBuffRec->data[MAX_RCDB_RCDIAG_ENTRIES - 1].value = pRmDiagWrapBuffRec->count - MAX_RCDB_RCDIAG_ENTRIES + 1;
         pRmDiagWrapBuffRec->count = MAX_RCDB_RCDIAG_ENTRIES;
     }
-    osGetCurrentTime(&(pRmDiagWrapBuffRec->timeStamp), &usec);
+    osGetSystemTime(&(pRmDiagWrapBuffRec->timeStamp), &usec);
 
     pCommon = rcdbAddRecToRingBuffer(pGpu, pRcDB, RmRcDiagReport,
                                      sizeof(RmRcDiag_RECORD), (NvU8 *)pRmDiagWrapBuffRec);
@@ -1258,13 +1258,13 @@ _rcdbGetTimeInfo
     prbEncAddUInt64(pPrbEnc,
                     NVDEBUG_SYSTEMINFO_TIMEINFO_TIMESTAMP_DUMP,
                     osGetTimestamp());
-    osGetCurrentTime(&sec, &usec);
+    osGetSystemTime(&sec, &usec);
     prbEncAddUInt64(pPrbEnc,
                     NVDEBUG_SYSTEMINFO_TIMEINFO_SYSTEM_TIME_DUMP,
                     (NvU64)sec * 1000000 + usec);
 
     // Add time since boot in seconds.
-    timeSinceBoot = osGetCurrentTick();
+    timeSinceBoot = osGetMonotonicTimeNs();
     prbEncAddUInt32(pPrbEnc,
                     NVDEBUG_SYSTEMINFO_TIMEINFO_TIME_SINCE_BOOT_SEC,
                     (NvU32)(timeSinceBoot / 1000000000ULL));
@@ -2067,46 +2067,16 @@ rcdbDumpJournal_IMPL
     const PRB_FIELD_DESC *pFieldDesc
 )
 {
-    OS_DRIVER_BLOCK DriverBlock;
     EVENT_JOURNAL *pJournal = &pRcDB->Journal;
     NvU8 *pJournalBuff      = pJournal->pBuffer;
     RmRCCommonJournal_RECORD *pRecord;
     NvU32 recSize;
-    NV_STATUS nvStatus = NV_OK;
     RmRCCommonJournal_RECORD List;
 
     // It is OK to dump the journal entries without the RM lock.
     // No need to check pRcDB->nvDumpState.bNoRMLock;
 
     recSize = pJournal->BufferSize - pJournal->BufferRemaining;
-
-    if (NULL != pGpu)
-    {
-        //
-        // Add RVA Header, even when there are no journal records.
-        // This header is required to resolve code addresses using the PDB file.
-        // We can log code addresses outside of the journal entries.
-        //
-        NV_CHECK_OK(nvStatus, LEVEL_ERROR, prbEncNestedStart(pPrbEnc, pFieldDesc));
-        if (nvStatus == NV_OK)
-        {
-            NV_CHECK_OK(nvStatus, LEVEL_ERROR,
-                prbEncNestedStart(pPrbEnc, DCL_DCLMSG_JOURNAL_RVAHEADER));
-            if (nvStatus == NV_OK)
-            {
-                portMemSet(&DriverBlock, 0x00, sizeof(DriverBlock));
-                osGetDriverBlock(pGpu->pOsGpuInfo, &DriverBlock);
-                prbEncAddUInt64(pPrbEnc, JOURNAL_RVAHEADER_DRIVER_START, (NvU64)DriverBlock.driverStart);
-                prbEncAddUInt32(pPrbEnc, JOURNAL_RVAHEADER_OFFSET, DriverBlock.offset);
-                prbEncAddUInt32(pPrbEnc, JOURNAL_RVAHEADER_POINTER_SIZE, sizeof(pJournal));
-                prbEncAddUInt64(pPrbEnc, JOURNAL_RVAHEADER_UNIQUE_ID_HIGH, *((NvU64*) DriverBlock.unique_id));
-                prbEncAddUInt64(pPrbEnc, JOURNAL_RVAHEADER_UNIQUE_ID_LOW, *((NvU64*) (DriverBlock.unique_id + 8)));
-                prbEncAddUInt32(pPrbEnc, JOURNAL_RVAHEADER_AGE, DriverBlock.age);
-                NV_CHECK_OK(nvStatus, LEVEL_ERROR, prbEncNestedEnd(pPrbEnc));
-            }
-            NV_CHECK_OK(nvStatus, LEVEL_ERROR, prbEncNestedEnd(pPrbEnc));
-        }
-    }
 
     // init the list to an empty state
     portMemSet(&List, 0x00, sizeof(List));
@@ -2943,6 +2913,11 @@ rcdbAddRmGpuDump
     NvU32               bufferUsed;
     NvU8               *pBuf               = NULL;
 
+    if (pGpu->getProperty(pGpu, PDB_PROP_GPU_TEGRA_SOC_NVDISPLAY))
+    {
+        return NV_ERR_NOT_SUPPORTED;
+    }
+
     //
     // The deferred dump codepath will block out other dumps until the DPC can
     // be executed. If this is the deferred callback attempting to do the dump,
@@ -3131,7 +3106,8 @@ rcdProbeGpuPresent(
         {
             // is the GPU we are checking allready reported lost?
             if (!pGpu->getProperty(pGpu, PDB_PROP_GPU_IN_PM_CODEPATH) &&
-                !pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_LOST))
+                !pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_LOST) &&
+                !pGpu->getProperty(pGpu, PDB_PROP_GPU_TEGRA_SOC_NVDISPLAY))
             {
                 testValue = GPU_CHECK_REG_RD32(pGpu, NV_PMC_BOOT_0, (~(pGpu->chipId0)));
                 if (testValue == GPU_REG_VALUE_INVALID)

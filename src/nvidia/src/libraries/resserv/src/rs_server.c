@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2015-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2015-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -251,7 +251,7 @@ NV_STATUS serverFreeResourceTreeUnderLock(RsServer *pServer, RS_RES_FREE_PARAMS 
         pLockInfo->pResRefToBackRef = pResourceRef;
         pLockInfo->traceOp = RS_LOCK_TRACE_FREE;
         pLockInfo->traceClassId = pResourceRef->externalClassId;
-        status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags);
+        status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags, 0);
         if (status != NV_OK)
             goto done;
 
@@ -695,7 +695,7 @@ _serverFreeClient
         return NV_ERR_INVALID_OBJECT_HANDLE;
 
     status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE,
-        pParams->pResFreeParams->pLockInfo, &releaseFlags);
+        pParams->pResFreeParams->pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -891,7 +891,7 @@ serverAllocResourceUnderLock
     if (!pServer->bConstructed)
         return NV_ERR_NOT_READY;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pParams->pLockInfo, &releaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pParams->pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -1728,7 +1728,7 @@ serverCopyResource
     if (status != NV_OK)
         return status;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pParams->pLockInfo, &releaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pParams->pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -2032,7 +2032,7 @@ serverMap
     if (status != NV_OK)
         goto done;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -2155,7 +2155,7 @@ serverUnmap
     if (status != NV_OK)
         goto done;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -2271,6 +2271,7 @@ serverInterMap
         goto done;
 
     pMapping->flags = pParams->flags;
+    pMapping->flags2 = pParams->flags2;
     pMapping->dmaOffset = pParams->dmaOffset;
     pMapping->size = pParams->length;
     pMapping->pMemDesc = pParams->pMemDesc;
@@ -2316,6 +2317,7 @@ serverInterUnmapMapping
         NV_ASSERT_OK_OR_GOTO(status, refAddInterMapping(pMapperRef, pMapping->pMappableRef, pMapping->pContextRef, &pNewMappingLeft), done);
 
         pNewMappingLeft->flags = pMapping->flags;
+        pNewMappingLeft->flags2 = pMapping->flags2;
         pNewMappingLeft->dmaOffset = pMapping->dmaOffset;
         pNewMappingLeft->size = pParams->dmaOffset - pMapping->dmaOffset;
     }
@@ -2325,6 +2327,7 @@ serverInterUnmapMapping
         NV_ASSERT_OK_OR_GOTO(status, refAddInterMapping(pMapperRef, pMapping->pMappableRef, pMapping->pContextRef, &pNewMappingRight), done);
 
         pNewMappingRight->flags = pMapping->flags;
+        pNewMappingRight->flags2 = pMapping->flags2;
         pNewMappingRight->dmaOffset = pParams->dmaOffset + pParams->size;
         pNewMappingRight->size = pMapping->dmaOffset + pMapping->size - pNewMappingRight->dmaOffset;
     }
@@ -2501,7 +2504,7 @@ serverInterUnmap
 
     bRestoreCallContext = NV_TRUE;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pLockInfo, &releaseFlags, 0);
     if (status != NV_OK)
         goto done;
 
@@ -4473,7 +4476,8 @@ serverResLock_Prologue
     RsServer *pServer,
     LOCK_ACCESS_TYPE access,
     RS_LOCK_INFO *pLockInfo,
-    NvU32 *pReleaseFlags
+    NvU32 *pReleaseFlags,
+    NvU32 gpuMask
 )
 {
     if (!(pLockInfo->state & RS_LOCK_STATE_CUSTOM_LOCK_1_ACQUIRED))
@@ -4574,7 +4578,7 @@ serverInterMap_Prologue
 {
     NV_STATUS status;
 
-    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pMapParams->pLockInfo, pReleaseFlags);
+    status = serverResLock_Prologue(pServer, LOCK_ACCESS_WRITE, pMapParams->pLockInfo, pReleaseFlags, 0);
 
     return status;
 }
@@ -4959,7 +4963,7 @@ NV_STATUS serverControl_Prologue
 
     pLockInfo->traceOp = RS_LOCK_TRACE_CTRL;
     pLockInfo->traceClassId = pParams->cmd;
-    status = serverResLock_Prologue(pServer, *pAccess, pParams->pLockInfo, pReleaseFlags);
+    status = serverResLock_Prologue(pServer, *pAccess, pParams->pLockInfo, pReleaseFlags, 0);
     if (status != NV_OK)
         return status;
 

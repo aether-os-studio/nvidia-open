@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -552,8 +552,11 @@ kfifoChannelGetFifoContextMemDesc_GM107
     NV_ASSERT(!memdescHasSubDeviceMemDescs(*ppMemDesc));
 
     NV_PRINTF(LEVEL_INFO,
-              "Channel %d engine 0x%x engineState 0x%x *ppMemDesc %p\n",
-              kchannelGetDebugTag(pKernelChannel), ENG_FIFO, engineState, *ppMemDesc);
+        FMT_CHANNEL_DEBUG_TAG " engine 0x%x engineState 0x%x *ppMemDesc %p\n",
+        kchannelGetDebugTag(pKernelChannel),
+        ENG_FIFO,
+        engineState,
+        *ppMemDesc);
 
     return NV_OK;
 }
@@ -1219,6 +1222,7 @@ kfifoPreAllocUserD_GM107
         memmgrSetMemDescPageSize_HAL(pGpu, pMemoryManager,
                                      pUserdInfo->userdPhysDesc[currentGpuInst],
                                      AT_GPU, RM_ATTR_PAGE_SIZE_4KB);
+        mapFlags |= BUS_MAP_FB_FLAGS_PAGE_SIZE_4K;
         if (bFifoFirstInit)
         {
             pUserdInfo->userdBar1MapStartOffset = kfifoGetUserdBar1MapStartOffset_HAL(pGpu, pKernelFifo);
@@ -1240,6 +1244,7 @@ kfifoPreAllocUserD_GM107
         // Force page size to 4KB in broadcast to match host phys access
         memmgrSetMemDescPageSize_HAL(pGpu, pMemoryManager, pUserdInfo->userdPhysDesc[currentGpuInst],
                                      AT_GPU, RM_ATTR_PAGE_SIZE_4KB);
+        mapFlags |= BUS_MAP_FB_FLAGS_PAGE_SIZE_4K;
 
         //
         // If coherent link is available, just get a coherent mapping to USERD and
@@ -1426,7 +1431,6 @@ kfifoFreePreAllocUserD_GM107
         {
             memdescUnmap(pUserdInfo->userdPhysDesc[currentGpuInst],
                             NV_TRUE,
-                            osGetCurrentProcess(),
                             (void*)pUserdInfo->userdBar1CpuPtr,
                             (void*)pUserdInfo->userdBar1Priv);
         }

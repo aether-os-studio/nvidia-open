@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2016-2024 NVIDIA Corporation
+    Copyright (c) 2016-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -22,6 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_api.h"
+#include "uvm_common.h"
 #include "uvm_global.h"
 #include "uvm_perf_events.h"
 #include "uvm_perf_module.h"
@@ -196,6 +197,8 @@ typedef struct
         unsigned                          max_resets;
 
         NvU64                                 pin_ns;
+
+        NvS8                              lapse_stat;
     } params;
 
     uvm_va_space_t                         *va_space;
@@ -261,12 +264,21 @@ static unsigned uvm_perf_thrashing_pin_threshold = UVM_PERF_THRASHING_PIN_THRESH
 
 // TODO: Bug 1768615: [uvm] Automatically tune default values for thrashing
 // detection/prevention parameters
-#define UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT 500
+#define UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT 500ULL
 #define UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT_EMULATION (UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT * 800)
+
+#define UVM_PERF_THRASHING_LAPSE_USEC_MAX (UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT * 1000)
+#define UVM_PERF_THRASHING_LAPSE_USEC_MIN (UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT / 100)
 
 // Lapse of time in microseconds that determines if two consecutive events on
 // the same page can be considered thrashing
 static unsigned uvm_perf_thrashing_lapse_usec = UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT;
+
+#define UVM_PERF_LAPSE_VOTE_THRESHOLD   32
+
+// Number of lapse intervals greater than uvm_perf_thrashing_lapse_usec,
+// big enough to consider readjusting.
+static unsigned int uvm_perf_lapse_vote_threshold = UVM_PERF_LAPSE_VOTE_THRESHOLD;
 
 #define UVM_PERF_THRASHING_NAP_DEFAULT 1
 #define UVM_PERF_THRASHING_NAP_MAX     100
@@ -308,6 +320,7 @@ module_param(uvm_perf_thrashing_enable,        uint, S_IRUGO);
 module_param(uvm_perf_thrashing_threshold,     uint, S_IRUGO);
 module_param(uvm_perf_thrashing_pin_threshold, uint, S_IRUGO);
 module_param(uvm_perf_thrashing_lapse_usec,    uint, S_IRUGO);
+module_param(uvm_perf_lapse_vote_threshold,    uint, S_IRUGO);
 module_param(uvm_perf_thrashing_nap,           uint, S_IRUGO);
 module_param(uvm_perf_thrashing_epoch,         uint, S_IRUGO);
 module_param(uvm_perf_thrashing_pin,           uint, S_IRUGO);
@@ -323,6 +336,7 @@ static bool g_uvm_perf_thrashing_enable;
 static unsigned g_uvm_perf_thrashing_threshold;
 static unsigned g_uvm_perf_thrashing_pin_threshold;
 static NvU64 g_uvm_perf_thrashing_lapse_usec;
+static unsigned g_uvm_perf_lapse_vote_threshold;
 static NvU64 g_uvm_perf_thrashing_nap;
 static NvU64 g_uvm_perf_thrashing_epoch;
 static NvU64 g_uvm_perf_thrashing_pin;
@@ -397,9 +411,13 @@ static void page_thrashing_set_throttling_end_time_stamp(page_thrashing_info_t *
 static uvm_perf_module_t g_module_thrashing;
 
 // Callback declaration for the performance heuristics events
-static void thrashing_event_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data);
-static void thrashing_block_destroy_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data);
-static void thrashing_block_munmap_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data);
+static void thrashing_event_cb(uvm_va_space_t *va_space, uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data);
+static void thrashing_block_destroy_cb(uvm_va_space_t *va_space,
+                                       uvm_perf_event_t event_id,
+                                       uvm_perf_event_data_t *event_data);
+static void thrashing_block_munmap_cb(uvm_va_space_t *va_space,
+                                      uvm_perf_event_t event_id,
+                                      uvm_perf_event_data_t *event_data);
 
 static uvm_perf_module_event_callback_desc_t g_callbacks_thrashing[] = {
     { UVM_PERF_EVENT_BLOCK_DESTROY, thrashing_block_destroy_cb },
@@ -680,7 +698,7 @@ void uvm_perf_thrashing_info_destroy(uvm_va_block_t *va_block)
     }
 }
 
-void thrashing_block_destroy_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
+void thrashing_block_destroy_cb(uvm_va_space_t *va_space, uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
 {
     uvm_va_block_t *va_block;
 
@@ -703,7 +721,7 @@ void thrashing_block_destroy_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t
     uvm_perf_thrashing_info_destroy(va_block);
 }
 
-void thrashing_block_munmap_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
+void thrashing_block_munmap_cb(uvm_va_space_t *va_space, uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
 {
     uvm_va_block_t *va_block = event_data->block_munmap.block;
     uvm_va_block_region_t region = event_data->block_munmap.region;
@@ -1227,12 +1245,11 @@ static bool is_migration_pinned_pages_update(uvm_va_block_t *va_block,
 
 // This function processes migration/revocation events and determines if the
 // affected pages are thrashing or not.
-void thrashing_event_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
+void thrashing_event_cb(uvm_va_space_t *va_space, uvm_perf_event_t event_id, uvm_perf_event_data_t *event_data)
 {
     va_space_thrashing_info_t *va_space_thrashing;
     block_thrashing_info_t *block_thrashing = NULL;
     uvm_va_block_t *va_block;
-    uvm_va_space_t *va_space;
     NvU64 address;
     NvU64 bytes;
     uvm_processor_id_t processor_id;
@@ -1251,6 +1268,11 @@ void thrashing_event_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_
         bytes        = event_data->migration.bytes;
         processor_id = event_data->migration.dst;
 
+        // TODO: Bug 5138823: [uvm] Add support for thrashing detection and
+        // mitigation for pageable memory
+        if (!va_block)
+            return;
+
         // Skip the thrashing detection logic on eviction as we cannot take
         // the VA space lock
         if (event_data->migration.cause == UVM_MAKE_RESIDENT_CAUSE_EVICTION)
@@ -1260,7 +1282,6 @@ void thrashing_event_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_
         if (!uvm_id_equal(event_data->migration.dst, event_data->migration.make_resident_context->dest_id))
             return;
 
-        va_space = uvm_va_block_get_va_space(va_block);
         va_space_thrashing = va_space_thrashing_info_get(va_space);
         if (!va_space_thrashing->params.enable)
             return;
@@ -1302,7 +1323,6 @@ void thrashing_event_cb(uvm_perf_event_t event_id, uvm_perf_event_data_t *event_
         bytes        = event_data->revocation.bytes;
         processor_id = event_data->revocation.proc_id;
 
-        va_space = uvm_va_block_get_va_space(va_block);
         va_space_thrashing = va_space_thrashing_info_get(va_space);
         if (!va_space_thrashing->params.enable)
             return;
@@ -1402,6 +1422,10 @@ static bool thrashing_processors_have_fast_access_to(uvm_va_space_t *va_space,
 
     // Combine NVLINK/C2C and native atomics mask since we could have PCIe
     // atomics in the future
+    // TODO: Bug 5232283: has_fast_link is used incorrectly. It should be
+    // documented that has_fast_link is always symmetric. has_fast_link_from
+    // will be needed if the symmetry assumption is ever broken.
+
     uvm_processor_mask_and(fast_to,
                            &va_space->has_fast_link[uvm_id_value(to)],
                            &va_space->has_native_atomics[uvm_id_value(to)]);
@@ -1487,6 +1511,8 @@ static uvm_perf_thrashing_hint_t get_hint_for_migration_thrashing(va_space_thras
         UVM_ASSERT(UVM_ID_IS_VALID(closest_resident_id));
     }
 
+    // TODO: Bug 5279540 : In CDMM mode, if the closest_resident_id is GPU,
+    // we need to pin to the CPU as opposed to throttling.
     if (thrashing_processors_can_access(va_space, page_thrashing, preferred_location)) {
         // The logic in uvm_va_block_select_residency chooses the preferred
         // location if the requester can access it, so all processors should
@@ -1506,8 +1532,8 @@ static uvm_perf_thrashing_hint_t get_hint_for_migration_thrashing(va_space_thras
         // to the current residency. This is skipped if the preferred location
         // is thrashing and not accessible by the rest of thrashing processors.
         // Otherwise, we would be in the condition above.
-        if (UVM_ID_IS_CPU(closest_resident_id)) {
-            // On P9 systems, we prefer the CPU to map vidmem (since it can
+        if (UVM_ID_IS_CPU(closest_resident_id) && thrashing_processors_can_access(va_space, page_thrashing, requester)) {
+            // On Coherent systems, we prefer the CPU to map vidmem (since it can
             // cache it), so don't map the GPU to sysmem.
             if (UVM_ID_IS_GPU(requester)) {
                 hint.type = UVM_PERF_THRASHING_HINT_TYPE_PIN;
@@ -1592,6 +1618,29 @@ static uvm_perf_thrashing_hint_t get_hint_for_migration_thrashing(va_space_thras
         hint.pin.residency = UVM_ID_CPU;
 
     return hint;
+}
+
+static void adjust_thrashing_lapse(va_space_thrashing_info_t *ti, NvU64 lapse)
+{
+    // If lapse is non-default, i.e. provided by user explicitly, don't adjust it
+    if (g_uvm_perf_thrashing_lapse_usec != UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT)
+        return;
+
+    // Update statistics without if-else conditionals.
+    ti->params.lapse_stat += 2 * !(lapse < ti->params.lapse_ns) - 1;
+
+    // Voting capped exponential adjustment
+    if (ti->params.lapse_stat >= g_uvm_perf_lapse_vote_threshold &&
+        ti->params.lapse_ns < UVM_PERF_THRASHING_LAPSE_USEC_MAX * 1000)
+        ti->params.lapse_ns += min(ti->params.lapse_ns / 8, UVM_PERF_THRASHING_LAPSE_USEC_MAX / 10 * 1000);
+    else
+    if (-ti->params.lapse_stat <= -(int)g_uvm_perf_lapse_vote_threshold &&
+        ti->params.lapse_ns > UVM_PERF_THRASHING_LAPSE_USEC_MIN * 1000)
+        ti->params.lapse_ns -= max(ti->params.lapse_ns / 8, UVM_PERF_THRASHING_LAPSE_USEC_MIN * 1000);
+    else
+        return;
+
+    ti->params.lapse_stat /= 2;
 }
 
 // Function called on fault that tells the fault handler if any operation
@@ -1696,6 +1745,8 @@ uvm_perf_thrashing_hint_t uvm_perf_thrashing_get_hint(uvm_va_block_t *va_block,
     UVM_ASSERT(!uvm_processor_mask_test(&page_thrashing->throttled_processors, requester));
 
     last_time_stamp = page_thrashing_get_time_stamp(page_thrashing);
+
+    adjust_thrashing_lapse(va_space_thrashing, time_stamp - last_time_stamp);
 
     // If the lapse since the last thrashing event is longer than a thrashing
     // lapse we are no longer thrashing
@@ -1998,6 +2049,8 @@ NV_STATUS uvm_perf_thrashing_init(void)
                                          UVM_PERF_THRASHING_PIN_THRESHOLD_MAX);
 
     INIT_THRASHING_PARAMETER_NONZERO(uvm_perf_thrashing_lapse_usec, UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT);
+
+    INIT_THRASHING_PARAMETER_NONZERO(uvm_perf_lapse_vote_threshold, UVM_PERF_THRASHING_LAPSE_USEC_DEFAULT);
 
     INIT_THRASHING_PARAMETER_NONZERO_MAX(uvm_perf_thrashing_nap,
                                          UVM_PERF_THRASHING_NAP_DEFAULT,

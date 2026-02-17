@@ -224,21 +224,15 @@ static void FillGpEntry(NvPushChannelSegmentPtr segment, NvU32 putOffset,
  */
 NvU32 __nvPushProgressTrackerEntrySize(const NvPushDeviceRec *pDevice)
 {
-    NvU32 dwords, size;
+    NvU32 dwords;
 
     /*
-     * The minimum number of methods we need is 4 for pre-Volta (SemaphoreA-D),
-     * and 5 for Volta+ (SemAddrHi/Lo, SemPayloadHi/Lo, SemExecute).
-     * The pushbuffer encoding consists of one 32-bit header plus one 32-bit
-     * data entry for each method.
+     * The minimum number of methods we need is 5 (SemAddrHi/Lo,
+     * SemPayloadHi/Lo, SemExecute). The pushbuffer encoding consists of one
+     * 32-bit header plus one 32-bit data entry for each method, making for a
+     * total of 6 dwords.
      */
-    dwords = 1;
-
-    if (pDevice->hal.caps.voltaSemMethods) {
-        dwords += 5;
-    } else {
-        dwords += 4;
-    }
+    dwords = 6;
 
     /*
      * If SLI is enabled, we may need to ensure that the semaphore is written
@@ -250,15 +244,7 @@ NvU32 __nvPushProgressTrackerEntrySize(const NvPushDeviceRec *pDevice)
         dwords += 2;
     }
 
-    size = dwords * sizeof(NvU32);
-
-    /*
-     * If the GPU is affected by hardware bug 1667921, then we pad this out to
-     * NV_ALIGN_LBDAT_EXTRA_BUG.  (The workaround requires that each entry be a
-     * multiple of this size.)
-     */
-    nvAssert(size <= NV_ALIGN_LBDAT_EXTRA_BUG);
-    return pDevice->hostLBoverflowBug1667921 ? NV_ALIGN_LBDAT_EXTRA_BUG : size;
+    return dwords * sizeof(NvU32);
 }
 
 /*!
@@ -295,6 +281,13 @@ static void InsertProgressTracker(NvPushChannelPtr p, NvU32 putOffset,
     const NvU32 payload =
         DRF_NUM(_PUSH_PROGRESS_TRACKER, _SEMAPHORE, _GET, putOffsetDwords) |
         DRF_NUM(_PUSH_PROGRESS_TRACKER, _SEMAPHORE, _GP_GET, gpPutOffset / 2);
+    const NvU32 semaphoreOperation =
+        DRF_DEF(C36F, _SEM_EXECUTE, _OPERATION, _RELEASE) |
+        DRF_DEF(C36F, _SEM_EXECUTE, _PAYLOAD_SIZE, _32BIT) |
+        DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_TIMESTAMP, _DIS) |
+        (progressTrackerWFI ?
+         DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_WFI, _EN) :
+         DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_WFI, _DIS));
 
     NvU32 restoreSDM = NV_PUSH_SUBDEVICE_MASK_ALL;
 
@@ -324,44 +317,15 @@ static void InsertProgressTracker(NvPushChannelPtr p, NvU32 putOffset,
         restoreSDM = p->currentSubDevMask;
         SetSubDeviceMask(p, progressTracker, NV_PUSH_SUBDEVICE_MASK_ALL);
     }
-    if (pDevice->hal.caps.voltaSemMethods) {
-        const NvU32 semaphoreOperation =
-            DRF_DEF(C36F, _SEM_EXECUTE, _OPERATION, _RELEASE) |
-            DRF_DEF(C36F, _SEM_EXECUTE, _PAYLOAD_SIZE, _32BIT) |
-            DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_TIMESTAMP, _DIS) |
-            (progressTrackerWFI ?
-             DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_WFI, _EN) :
-             DRF_DEF(C36F, _SEM_EXECUTE, _RELEASE_WFI, _DIS));
 
-        __nvPushStart(p, progressTracker, 0, NVC36F_SEM_ADDR_LO, 5, _INC_METHOD);
-        __nvPushSetMethodDataSegmentU64LE(segment, p->progressSemaphore.gpuVA);
-        __nvPushSetMethodDataSegment(segment, payload);
-        __nvPushSetMethodDataSegment(segment, 0);
-        __nvPushSetMethodDataSegment(segment, semaphoreOperation);
-    } else {
-        const NvU32 semaphoreOperation =
-            DRF_DEF(A16F, _SEMAPHORED, _OPERATION, _RELEASE) |
-            DRF_DEF(A16F, _SEMAPHORED, _RELEASE_SIZE, _4BYTE) |
-            (progressTrackerWFI ?
-             DRF_DEF(A16F, _SEMAPHORED, _RELEASE_WFI, _EN) :
-             DRF_DEF(A16F, _SEMAPHORED, _RELEASE_WFI, _DIS));
-
-        __nvPushStart(p, progressTracker, 0, NVA16F_SEMAPHOREA, 4, _INC_METHOD);
-        __nvPushSetMethodDataSegmentU64(segment, p->progressSemaphore.gpuVA);
-        __nvPushSetMethodDataSegment(segment, payload);
-        __nvPushSetMethodDataSegment(segment, semaphoreOperation);
-    }
+    __nvPushStart(p, progressTracker, 0, NVC36F_SEM_ADDR_LO, 5, _INC_METHOD);
+    __nvPushSetMethodDataSegmentU64LE(segment, p->progressSemaphore.gpuVA);
+    __nvPushSetMethodDataSegment(segment, payload);
+    __nvPushSetMethodDataSegment(segment, 0);
+    __nvPushSetMethodDataSegment(segment, semaphoreOperation);
 
     if (restoreSDM != NV_PUSH_SUBDEVICE_MASK_ALL) {
         SetSubDeviceMask(p, progressTracker, restoreSDM);
-    }
-
-    if (pDevice->hostLBoverflowBug1667921) {
-        /* The workaround for bug 1667921 dictates that we must kick off a
-         * GPFIFO segment of an exact size.  Pad out with NOPs. */
-        while (segment->freeDwords) {
-            nvPushImmedValSegment(p, progressTracker, 0, NVA16F_NOP, 0);
-        }
     }
 
     FillGpEntry(segment,
@@ -1119,7 +1083,6 @@ NvBool __nvPushGetHal(
             pHal->kickoff = DoorbellKickoff;
             pHal->caps.clientAllocatesUserD = TRUE;
             pHal->caps.allocateDoubleSizeGpFifo = FALSE;
-            pHal->caps.voltaSemMethods = TRUE;
             pHal->releaseTimelineSemaphore = VoltaReleaseTimelineSemaphore;
             pHal->acquireTimelineSemaphore = VoltaAcquireTimelineSemaphore;
             break;

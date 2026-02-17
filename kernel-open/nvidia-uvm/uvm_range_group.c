@@ -184,6 +184,7 @@ static NV_STATUS uvm_range_group_va_range_migrate_block_locked(uvm_va_range_mana
     uvm_gpu_id_t gpu_id;
     uvm_processor_mask_t *map_mask = &va_block_context->caller_processor_mask;
     uvm_va_policy_t *policy = &managed_range->policy;
+
     // Set the migration CPU NUMA node from the policy.
     va_block_context->make_resident.dest_nid = policy->preferred_nid;
 
@@ -219,7 +220,7 @@ static NV_STATUS uvm_range_group_va_range_migrate_block_locked(uvm_va_range_mana
     // RWA permission
     status = uvm_va_block_map_mask(va_block,
                                    va_block_context,
-                                   &managed_range->va_range.uvm_lite_gpus,
+                                   &managed_range->uvm_lite_gpus,
                                    region,
                                    NULL,
                                    UVM_PROT_READ_WRITE_ATOMIC,
@@ -231,7 +232,7 @@ static NV_STATUS uvm_range_group_va_range_migrate_block_locked(uvm_va_range_mana
     uvm_processor_mask_and(map_mask,
                            &managed_range->policy.accessed_by,
                            &managed_range->va_range.va_space->can_access[uvm_id_value(policy->preferred_location)]);
-    uvm_processor_mask_andnot(map_mask, map_mask, &managed_range->va_range.uvm_lite_gpus);
+    uvm_processor_mask_andnot(map_mask, map_mask, &managed_range->uvm_lite_gpus);
 
     for_each_gpu_id_in_mask(gpu_id, map_mask) {
         status = uvm_va_block_add_mappings(va_block,
@@ -431,7 +432,7 @@ static NV_STATUS uvm_range_group_prevent_migration(uvm_range_group_t *range_grou
 
             // Check that all UVM-Lite GPUs are able to access the
             // preferred location
-            if (!uvm_processor_mask_subset(&managed_range->va_range.uvm_lite_gpus,
+            if (!uvm_processor_mask_subset(&managed_range->uvm_lite_gpus,
                                            &va_space->accessible_from[uvm_id_value(preferred_location)])) {
                 status = NV_ERR_INVALID_DEVICE;
                 goto done;

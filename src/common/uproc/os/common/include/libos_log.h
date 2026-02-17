@@ -33,6 +33,40 @@
 #include "utils/nvprintf_level.h"
 #endif
 
+/*!
+ *  Libos log task id is needed for decoding log entries from
+ *  a merged nvlog buffer, which contains entries from different
+ *  elfSections
+ *
+ *  First 16 IDs are reserved for GSP use, non gsp users that wants
+ *  merged nvlog feature can use id after LIBOS_LOG_TASK_GSP_MAX_ID
+*
+ *  Keep GSP task id consistent with nv_firmware_task_t such that
+ *  LIBOS_LOG_TASK id = NV_FIRMWARE_TASK number + 2
+ */
+#define LIBOS_LOG_TASK_UNKNOWN    0x0
+#define LIBOS_LOG_TASK_GSP_KERNEL 0x1
+#define LIBOS_LOG_TASK_GSP_INIT   0x2
+#define LIBOS_LOG_TASK_GSP_RM     0x3
+#define LIBOS_LOG_TASK_GSP_INTR   0x4
+#define LIBOS_LOG_TASK_GSP_VGPU   0x5
+#define LIBOS_LOG_TASK_GSP_MNOC   0x6
+#define LIBOS_LOG_TASK_GSP_DEBUG  0x7
+#define LIBOS_LOG_TASK_GSP_ROOT   0x8
+#define LIBOS_LOG_TASK_GSP_MAX_ID 0x9
+#define LIBOS_LOG_TASK_MAX_ID     LIBOS_LOG_TASK_GSP_MAX_ID
+
+
+/*!
+ *  Starting from LIBOS_LOG_NVLOG_BUFFER_VERSION_2, we will pack totalArgs
+ *  and taskId with the metadata pointer in the same NvU64. This allow us to
+ *  parse the log without gsp_log.bin, and support merged Nvlog decoding
+ */
+#define LIBOS_LOG_METADATA_VA 47:0
+#define LIBOS_LOG_METADATA_TOTAL_ARGS 55:48
+#define LIBOS_LOG_METADATA_TASK_ID 63:56
+
+
 /**
  *  @brief The log metadata structures and format strings are stripped
  *         These structures are emitted into the .logging section
@@ -98,26 +132,7 @@ static inline LibosPrintfArgument LibosPrintfArgumentS64(NvS64 i) {
     return r;
 }
 
-#if !defined(NVRM) && !defined(PMU_RTOS) && LIBOS_CONFIG_FLOAT
-    static inline LibosPrintfArgument LibosPrintfArgumentFloat(float f) {
-        LibosPrintfArgument r;
-        r.f = f;
-        return r;
-    }
-    static inline LibosPrintfArgument LibosPrintfArgumentDouble(double f) {
-        LibosPrintfArgument r;
-        r.f = f;
-        return r;
-    }
-
-#   define LIBOS_LOG_BUILD_ARG(a)  _Generic((a),                                 \
-                                    float: LibosPrintfArgumentFloat(a),          \
-                                    double: LibosPrintfArgumentDouble(a),        \
-                                    default : LibosPrintfArgumentU64((NvU64)a)),
-
-#else
-#   define LIBOS_LOG_BUILD_ARG(a)  (NvU64)(a),
-#endif
+#define LIBOS_LOG_BUILD_ARG(a)  (NvU64)(a),
 
 #define LIBOS_LOG_BUILD_1(fmt)
 #define LIBOS_LOG_BUILD_2(fmt, b)       LIBOS_LOG_BUILD_ARG(b)
@@ -239,28 +254,8 @@ static inline void gccFakePrintf(const char *pFmt, ...)
 #define LIBOS_CHECK_PRINTF_FMT(...)
 #endif // defined(DEBUG)
 
-void LibosLogTokens(const libosLogMetadata * metadata, const LibosPrintfArgument * tokens, NvU64 count);
-
-/*!
- *  Cast remaining log arguments to integers for storage
- *
- */
-#define LibosLog(level, ...)                                                                                   \
-    do                                                                                                         \
-    {                                                                                                          \
-        if (0)                                                                                                 \
-            LIBOS_CHECK_PRINTF_FMT(__VA_ARGS__);                                                               \
-        static const LIBOS_SECTION_LOGGING char libos_pvt_format[]         = {LIBOS_MACRO_FIRST(__VA_ARGS__)}; \
-        static const LIBOS_SECTION_LOGGING char libos_pvt_file[]           = {__FILE__};                       \
-        static const LIBOS_SECTION_LOGGING libosLogMetadata libos_pvt_meta = {                                 \
-            .filename      = &libos_pvt_file[0],                                                               \
-            .format        = &libos_pvt_format[0],                                                             \
-            .lineNumber    = __LINE__,                                                                         \
-            .argumentCount = LIBOS_MACRO_GET_COUNT(__VA_ARGS__) - 1,                                           \
-            .printLevel    = level};                                                                           \
-        const LibosPrintfArgument tokens[] = { APPLY_REMAINDER(__VA_ARGS__) };                                 \
-        LibosLogTokens(&libos_pvt_meta, &tokens[0], sizeof(tokens) / sizeof(*tokens));                         \
-    } while (0)
+void LibosLogInitialize(NvU64 * buffer, NvU64 size, NvU8 liblogTaskId);
+void LibosLogEntry(NvU64 nArgs, ...);
 
 /*!
  * Libos print data is split between 4 input sections (all of which
@@ -289,6 +284,18 @@ void LibosLogTokens(const libosLogMetadata * metadata, const LibosPrintfArgument
  */
 #define LIBOS_ATTR_USED                __attribute__((used))
 
+#if defined(NVRISCV_PRINT_RAW_MODE) && NVRISCV_PRINT_RAW_MODE == 1
+// libnvriscv driver is incompatible with variadic dispatch
+#define LIBOS_LOG_DISPATCH(dispatcher, libos_pvt_meta, ...) \
+    {                                                                                  \
+        const NvU64 tokens[] = {APPLY_REMAINDER(__VA_ARGS__) (NvU64)&libos_pvt_meta};  \
+        dispatcher(sizeof(tokens) / sizeof(*tokens), &tokens[0]);                      \
+    }
+#else
+#define LIBOS_LOG_DISPATCH(dispatcher, libos_pvt_meta, ...) \
+    dispatcher(LIBOS_MACRO_GET_COUNT(__VA_ARGS__), APPLY_REMAINDER(__VA_ARGS__) (NvU64)&libos_pvt_meta);
+#endif
+
 /*!
  *  Cast remaining log arguments to integers for storage
  */
@@ -305,8 +312,7 @@ void LibosLogTokens(const libosLogMetadata * metadata, const LibosPrintfArgument
             .argumentCount = LIBOS_MACRO_GET_COUNT(__VA_ARGS__) - 1,                                           \
             .printLevel    = level,                                                                            \
             .specialType   = special};                                                                         \
-        const NvU64 tokens[] = {APPLY_REMAINDER(__VA_ARGS__)(NvU64) & libos_pvt_meta};                         \
-        dispatcher(sizeof(tokens) / sizeof(*tokens), &tokens[0]);                                              \
+        LIBOS_LOG_DISPATCH(dispatcher, libos_pvt_meta, __VA_ARGS__)                                            \
     } while (0)
 
 #define LIBOS_LOG_INTERNAL(dispatcher, level, ...)                                                             \
@@ -338,8 +344,7 @@ void LibosLogTokens(const libosLogMetadata * metadata, const LibosPrintfArgument
             .versionExtended = 0x8000000000000000ULL,                                                          \
             .elfSectionName  = &libos_pvt_elf_name[0],                                                         \
             .meta            = libos_pvt_meta};                                                                \
-        const NvU64 tokens[] = {APPLY_REMAINDER(__VA_ARGS__)(NvU64) & libos_pvt_meta_ex};                      \
-        dispatcher(sizeof(tokens) / sizeof(*tokens), &tokens[0]);                                              \
+        LIBOS_LOG_DISPATCH(dispatcher, libos_pvt_meta_ex, __VA_ARGS__);                                        \
     } while (0)
 
 #endif

@@ -98,14 +98,16 @@
 //
 // When a memory allocation from PMA fails and eviction is requested, PMM will
 // check whether it can evict any user memory chunks to satisfy the request.
-// All allocated user memory root chunks are tracked in an LRU list
-// (root_chunks.va_block_used). A root chunk is moved to the tail of that list
-// whenever any of its subchunks is allocated (unpinned) by a VA block (see
-// uvm_pmm_gpu_unpin_allocated()). When a root chunk is selected for eviction,
-// it has the eviction flag set (see pick_root_chunk_to_evict()). This flag
-// affects many of the PMM operations on all of the subchunks of the root chunk
-// being evicted. See usage of (root_)chunk_is_in_eviction(), in particular in
-// chunk_free_locked() and claim_free_chunk().
+// All allocated user memory root chunks are tracked in one of several LRU lists
+// (root_chunks.alloc_list[n]). The list used depends on the state of the chunk
+// (see uvm_pmm_alloc_list_t). A root chunk is moved to the tail of the used
+// list (UVM_PMM_ALLOC_LIST_USED) whenever any of its subchunks is allocated
+// (unpinned) by a VA block (see uvm_pmm_gpu_unpin_allocated()). When a root
+// chunk is selected for eviction, it has the eviction flag set
+// (see pick_root_chunk_to_evict()). This flag affects many of the PMM
+// operations on all of the subchunks of the root chunk being evicted. See usage
+// of (root_)chunk_is_in_eviction(), in particular in chunk_free_locked() and
+// claim_free_chunk().
 //
 // To evict a root chunk, all of its free subchunks are pinned, then all
 // resident pages backed by it are moved to the CPU one VA block at a time.
@@ -406,7 +408,10 @@ static void chunk_pin(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
     uvm_gpu_root_chunk_t *root_chunk = root_chunk_from_chunk(pmm, chunk);
 
-    uvm_assert_spinlock_locked(&pmm->list_lock);
+    // The PMM list_lock must be held, but calling uvm_assert_spinlock_locked()
+    // is not possible here due to the absence of the UVM context pointer in
+    // the interrupt context when called from devmem_page_free().
+
     UVM_ASSERT(chunk->state != UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
     chunk->state = UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED;
 
@@ -419,8 +424,9 @@ static void chunk_pin(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 
     // The passed-in subchunk is not the root chunk so the root chunk has to be
     // split.
-    UVM_ASSERT_MSG(chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT, "chunk state %s\n",
-            uvm_pmm_gpu_chunk_state_string(chunk->state));
+    UVM_ASSERT_MSG(chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT,
+                   "chunk state %s\n",
+                    uvm_pmm_gpu_chunk_state_string(chunk->state));
 
     chunk->suballoc->pinned_leaf_chunks++;
 }
@@ -433,7 +439,6 @@ static void chunk_unpin(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_pmm_gpu_
 
     uvm_assert_spinlock_locked(&pmm->list_lock);
     UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
-    UVM_ASSERT(chunk->va_block == NULL);
     UVM_ASSERT(chunk_is_root_chunk_pinned(pmm, chunk));
     UVM_ASSERT(new_state != UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
 
@@ -448,8 +453,9 @@ static void chunk_unpin(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_pmm_gpu_
 
     // The passed-in subchunk is not the root chunk so the root chunk has to be
     // split.
-    UVM_ASSERT_MSG(chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT, "chunk state %s\n",
-            uvm_pmm_gpu_chunk_state_string(chunk->state));
+    UVM_ASSERT_MSG(chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT,
+                   "chunk state %s\n",
+                   uvm_pmm_gpu_chunk_state_string(chunk->state));
 
     UVM_ASSERT(chunk->suballoc->pinned_leaf_chunks != 0);
     chunk->suballoc->pinned_leaf_chunks--;
@@ -478,15 +484,21 @@ uvm_gpu_t *uvm_gpu_chunk_get_gpu(const uvm_gpu_chunk_t *chunk)
     return gpu;
 }
 
-struct page *uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+NvU64 uvm_gpu_chunk_to_sys_addr(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
     uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
     NvU64 sys_addr = chunk->address + gpu->parent->system_bus.memory_window_start;
-    unsigned long pfn = sys_addr >> PAGE_SHIFT;
 
     UVM_ASSERT(sys_addr + uvm_gpu_chunk_get_size(chunk) <= gpu->parent->system_bus.memory_window_end + 1);
-    UVM_ASSERT(gpu->mem_info.numa.enabled);
+    return sys_addr;
+}
 
+struct page *uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+{
+    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
+    unsigned long pfn = uvm_gpu_chunk_to_sys_addr(pmm, chunk) >> PAGE_SHIFT;
+
+    UVM_ASSERT(gpu->mem_info.numa.enabled);
     return pfn_to_page(pfn);
 }
 
@@ -601,8 +613,6 @@ NV_STATUS uvm_pmm_gpu_alloc_kernel(uvm_pmm_gpu_t *pmm,
         return status;
 
     for (i = 0; i < num_chunks; ++i) {
-        UVM_ASSERT(chunks[i]->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
-
         uvm_spin_lock(&pmm->list_lock);
         chunk_unpin(pmm, chunks[i], UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
         chunks[i]->is_referenced = false;
@@ -637,7 +647,7 @@ static void chunk_update_lists_locked(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk
         else if (root_chunk->chunk.state != UVM_PMM_GPU_CHUNK_STATE_FREE) {
             UVM_ASSERT(root_chunk->chunk.state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT ||
                        root_chunk->chunk.state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
-            list_move_tail(&root_chunk->chunk.list, &pmm->root_chunks.va_block_used);
+            list_move_tail(&root_chunk->chunk.list, &pmm->root_chunks.alloc_list[UVM_PMM_ALLOC_LIST_USED]);
         }
     }
 
@@ -648,45 +658,28 @@ static void chunk_update_lists_locked(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk
         list_del_init(&chunk->list);
 }
 
-static void gpu_unpin_temp(uvm_pmm_gpu_t *pmm,
-                           uvm_gpu_chunk_t *chunk,
-                           uvm_va_block_t *va_block,
-                           bool is_referenced)
+void uvm_pmm_gpu_unpin_allocated(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_va_block_t *va_block)
 {
     UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
     UVM_ASSERT(uvm_gpu_chunk_is_user(chunk));
-
-    INIT_LIST_HEAD(&chunk->list);
+    UVM_ASSERT(list_empty(&chunk->list));
+    UVM_ASSERT(va_block);
+    UVM_ASSERT(chunk->va_block == va_block);
 
     uvm_spin_lock(&pmm->list_lock);
 
-    UVM_ASSERT(!chunk->va_block);
-    UVM_ASSERT(va_block);
-    UVM_ASSERT(chunk->va_block_page_index < uvm_va_block_num_cpu_pages(va_block));
-
     chunk_unpin(pmm, chunk, UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
-    chunk->is_referenced = is_referenced;
-    chunk->va_block = va_block;
     chunk_update_lists_locked(pmm, chunk);
 
     uvm_spin_unlock(&pmm->list_lock);
-}
-
-void uvm_pmm_gpu_unpin_allocated(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_va_block_t *va_block)
-{
-    gpu_unpin_temp(pmm, chunk, va_block, false);
-}
-
-void uvm_pmm_gpu_unpin_referenced(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_va_block_t *va_block)
-{
-    gpu_unpin_temp(pmm, chunk, va_block, true);
 }
 
 void uvm_pmm_gpu_free(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_tracker_t *tracker)
 {
     NV_STATUS status;
 
-    if (!chunk)
+    // Referenced chunks are freed by Linux when the reference is released.
+    if (!chunk || chunk->is_referenced)
         return;
 
     UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED ||
@@ -752,6 +745,10 @@ static bool assert_chunk_mergeable(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
     size_t i;
 
     UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT);
+    UVM_ASSERT_MSG(chunk->suballoc->allocated == num_subchunks(chunk),
+                   "%u != %u\n",
+                   chunk->suballoc->allocated,
+                   num_subchunks(chunk));
     UVM_ASSERT(first_child->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED ||
                first_child->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
 
@@ -761,21 +758,9 @@ static bool assert_chunk_mergeable(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         UVM_ASSERT(child->state == first_child->state);
 
         if ((first_child->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) && uvm_gpu_chunk_is_user(first_child)) {
-            uvm_gpu_chunk_t *prev_child = chunk->suballoc->subchunks[i-1];
-
             UVM_ASSERT(child->va_block == child_va_block);
-            UVM_ASSERT(child->va_block_page_index ==
-                       prev_child->va_block_page_index + uvm_gpu_chunk_get_size(prev_child) / PAGE_SIZE);
-            UVM_ASSERT(child->is_referenced == prev_child->is_referenced);
+            UVM_ASSERT(child->is_referenced == first_child->is_referenced);
         }
-    }
-
-    if (first_child->state == UVM_PMM_GPU_CHUNK_STATE_FREE) {
-        UVM_ASSERT(chunk->suballoc->allocated == 0);
-    }
-    else {
-        UVM_ASSERT_MSG(chunk->suballoc->allocated == num_subchunks(chunk), "%u != %u\n",
-                chunk->suballoc->allocated, num_subchunks(chunk));
     }
 
     return true;
@@ -810,12 +795,12 @@ static void merge_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         UVM_ASSERT(subchunk->va_block);
 
         chunk->va_block = subchunk->va_block;
-        chunk->va_block_page_index = subchunk->va_block_page_index;
         chunk->is_referenced = subchunk->is_referenced;
     }
     else if (child_state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED) {
         UVM_ASSERT(root_chunk->chunk.suballoc->pinned_leaf_chunks >= num_sub);
         root_chunk->chunk.suballoc->pinned_leaf_chunks += 1 - num_sub;
+        chunk->va_block = subchunk->va_block;
     }
 
     chunk->state = child_state;
@@ -839,7 +824,7 @@ static void merge_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         UVM_ASSERT(list_empty(&subchunk->list));
 
         if ((child_state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) && uvm_gpu_chunk_is_user(subchunk))
-            UVM_ASSERT(subchunk->va_block != NULL);
+            UVM_ASSERT(subchunk->va_block);
 
         kmem_cache_free(CHUNK_CACHE, subchunk);
     }
@@ -1206,10 +1191,9 @@ void uvm_pmm_gpu_mark_chunk_evicted(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 
     UVM_ASSERT(chunk_is_in_eviction(pmm, chunk));
     UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
-    UVM_ASSERT(chunk->va_block != NULL);
+    UVM_ASSERT(chunk->va_block);
 
     chunk->va_block = NULL;
-    chunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
     chunk_pin(pmm, chunk);
 
     uvm_spin_unlock(&pmm->list_lock);
@@ -1263,11 +1247,13 @@ static NV_STATUS find_and_retain_va_block_to_evict(uvm_pmm_gpu_t *pmm, uvm_gpu_c
 
     uvm_spin_lock(&pmm->list_lock);
 
-    // All free chunks should have been pinned already by pin_free_chunks_func().
+    // All free chunks should have been pinned already by
+    // pin_free_chunks_func().
     UVM_ASSERT_MSG(chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED ||
                    chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED ||
                    chunk->state == UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT,
-                   "state %s\n", uvm_pmm_gpu_chunk_state_string(chunk->state));
+                   "state %s\n",
+                   uvm_pmm_gpu_chunk_state_string(chunk->state));
 
     if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) {
         UVM_ASSERT(chunk->va_block);
@@ -1421,7 +1407,7 @@ static void chunk_start_eviction(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
     uvm_gpu_chunk_set_in_eviction(chunk, true);
 }
 
-static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, struct list_head *list)
+static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, uvm_pmm_alloc_list_t alloc_list)
 {
     uvm_spin_lock(&pmm->list_lock);
 
@@ -1435,7 +1421,7 @@ static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t 
         // eviction lists.
         UVM_ASSERT(!list_empty(&chunk->list));
 
-        list_move_tail(&chunk->list, list);
+        list_move_tail(&chunk->list, &pmm->root_chunks.alloc_list[alloc_list]);
     }
 
     uvm_spin_unlock(&pmm->list_lock);
@@ -1443,12 +1429,49 @@ static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t 
 
 void uvm_pmm_gpu_mark_root_chunk_used(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
-    root_chunk_update_eviction_list(pmm, chunk, &pmm->root_chunks.va_block_used);
+    root_chunk_update_eviction_list(pmm, chunk, UVM_PMM_ALLOC_LIST_USED);
 }
 
 void uvm_pmm_gpu_mark_root_chunk_unused(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
-    root_chunk_update_eviction_list(pmm, chunk, &pmm->root_chunks.va_block_unused);
+    root_chunk_update_eviction_list(pmm, chunk, UVM_PMM_ALLOC_LIST_UNUSED);
+}
+
+void uvm_pmm_gpu_mark_root_chunk_discarded(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+{
+    root_chunk_update_eviction_list(pmm, chunk, UVM_PMM_ALLOC_LIST_DISCARDED);
+}
+
+static uvm_pmm_alloc_list_t get_alloc_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+{
+    uvm_pmm_alloc_list_t alloc_list;
+
+    uvm_assert_spinlock_locked(&pmm->list_lock);
+
+    for (alloc_list = 0; alloc_list < UVM_PMM_ALLOC_LIST_COUNT; alloc_list++) {
+        uvm_gpu_chunk_t *entry;
+        list_for_each_entry(entry, &pmm->root_chunks.alloc_list[alloc_list], list) {
+            if (entry == chunk)
+                return alloc_list;
+        }
+    }
+
+    return UVM_PMM_ALLOC_LIST_COUNT;
+}
+
+static uvm_gpu_chunk_t *get_first_allocated_chunk(uvm_pmm_gpu_t *pmm)
+{
+    uvm_pmm_alloc_list_t alloc_list;
+
+    uvm_assert_spinlock_locked(&pmm->list_lock);
+
+    for (alloc_list = 0; alloc_list < UVM_PMM_ALLOC_LIST_COUNT; alloc_list++) {
+        uvm_gpu_chunk_t *chunk = list_first_chunk(&pmm->root_chunks.alloc_list[alloc_list]);
+        if (chunk)
+            return chunk;
+    }
+
+    return NULL;
 }
 
 static uvm_gpu_root_chunk_t *pick_root_chunk_to_evict(uvm_pmm_gpu_t *pmm)
@@ -1475,13 +1498,10 @@ static uvm_gpu_root_chunk_t *pick_root_chunk_to_evict(uvm_pmm_gpu_t *pmm)
             UVM_ASSERT(chunk->is_zero);
     }
 
-    if (!chunk)
-        chunk = list_first_chunk(&pmm->root_chunks.va_block_unused);
-
     // TODO: Bug 1765193: Move the chunks to the tail of the used list whenever
     // they get mapped.
     if (!chunk)
-        chunk = list_first_chunk(&pmm->root_chunks.va_block_used);
+        chunk = get_first_allocated_chunk(pmm);
 
     if (chunk)
         chunk_start_eviction(pmm, chunk);
@@ -1490,6 +1510,7 @@ static uvm_gpu_root_chunk_t *pick_root_chunk_to_evict(uvm_pmm_gpu_t *pmm)
 
     if (chunk)
         return root_chunk_from_chunk(pmm, chunk);
+
     return NULL;
 }
 
@@ -1754,8 +1775,10 @@ static NV_STATUS alloc_chunk_with_splits(uvm_pmm_gpu_t *pmm,
             UVM_ASSERT(chunk->parent->suballoc);
             UVM_ASSERT(uvm_gpu_chunk_get_size(chunk->parent) == uvm_chunk_find_next_size(chunk_sizes, cur_size));
             UVM_ASSERT(chunk->parent->type == type);
-            UVM_ASSERT_MSG(chunk->parent->suballoc->allocated <= num_subchunks(chunk->parent), "allocated %u num %u\n",
-                    chunk->parent->suballoc->allocated, num_subchunks(chunk->parent));
+            UVM_ASSERT_MSG(chunk->parent->suballoc->allocated <= num_subchunks(chunk->parent),
+                           "allocated %u num %u\n",
+                           chunk->parent->suballoc->allocated,
+                           num_subchunks(chunk->parent));
         }
 
         if (cur_size == chunk_size) {
@@ -1860,10 +1883,9 @@ static void init_root_chunk(uvm_pmm_gpu_t *pmm,
                    uvm_pmm_gpu_chunk_state_string(chunk->state),
                    uvm_gpu_name(gpu));
 
-    UVM_ASSERT(chunk->parent == NULL);
-    UVM_ASSERT(chunk->suballoc == NULL);
-    UVM_ASSERT(chunk->va_block == NULL);
-    UVM_ASSERT(chunk->va_block_page_index == PAGES_PER_UVM_VA_BLOCK);
+    UVM_ASSERT(!chunk->parent);
+    UVM_ASSERT(!chunk->suballoc);
+    UVM_ASSERT(!chunk->va_block);
     UVM_ASSERT(list_empty(&chunk->list));
     UVM_ASSERT(uvm_gpu_chunk_get_size(chunk) == UVM_CHUNK_SIZE_MAX);
     UVM_ASSERT(!root_chunk_has_elevated_page(pmm, root_chunk));
@@ -2105,7 +2127,6 @@ NV_STATUS split_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         subchunk->type = chunk->type;
         uvm_gpu_chunk_set_size(subchunk, subchunk_size);
         subchunk->parent = chunk;
-        subchunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
         subchunk->is_zero = chunk->is_zero;
         INIT_LIST_HEAD(&subchunk->list);
 
@@ -2117,8 +2138,10 @@ NV_STATUS split_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
             uvm_assert_mutex_locked(&chunk->va_block->lock);
 
             subchunk->va_block = chunk->va_block;
-            subchunk->va_block_page_index = chunk->va_block_page_index + (i * subchunk_size) / PAGE_SIZE;
             subchunk->is_referenced = chunk->is_referenced;
+        }
+        else if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED) {
+            subchunk->va_block = chunk->va_block;
         }
     }
 
@@ -2133,7 +2156,6 @@ NV_STATUS split_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 
     if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) {
         chunk->va_block = NULL;
-        chunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
         chunk->is_referenced = false;
     }
     else if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED) {
@@ -2145,6 +2167,9 @@ NV_STATUS split_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         // accounting for the root chunk itself so add the 1 back.
         if (chunk_is_root_chunk(chunk))
             root_chunk->chunk.suballoc->pinned_leaf_chunks += 1;
+
+        chunk->va_block = NULL;
+        chunk->is_referenced = false;
     }
 
     chunk->state = UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT;
@@ -2226,16 +2251,15 @@ static void chunk_free_locked(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 
     if (root_chunk->chunk.in_eviction) {
         // A root chunk with pinned subchunks would never be picked for eviction
-        // so this one has to be in the allocated state. Pin it and let the
-        // evicting thread pick it up.
-        UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED);
-        UVM_ASSERT(chunk->va_block != NULL);
-        UVM_ASSERT(chunk->va_block_page_index != PAGES_PER_UVM_VA_BLOCK);
-        UVM_ASSERT(list_empty(&chunk->list));
-        chunk->va_block = NULL;
-        chunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
-        chunk->is_zero = false;
-        chunk_pin(pmm, chunk);
+        // but HMM evictions will end up here so leave the chunk pinned (or pin
+        // it) and let the eviction thread pick it up.
+        if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) {
+            UVM_ASSERT(chunk->va_block);
+            UVM_ASSERT(list_empty(&chunk->list));
+            chunk->va_block = NULL;
+            chunk->is_zero = false;
+            chunk_pin(pmm, chunk);
+        }
         return;
     }
 
@@ -2249,16 +2273,13 @@ static void chunk_free_locked(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         }
     }
 
-    if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED) {
-        chunk_unpin(pmm, chunk, UVM_PMM_GPU_CHUNK_STATE_FREE);
-    }
-    else {
-        chunk->state = UVM_PMM_GPU_CHUNK_STATE_FREE;
-        chunk->va_block = NULL;
-    }
-
-    chunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
+    chunk->va_block = NULL;
     chunk->is_zero = false;
+
+    if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED)
+        chunk_unpin(pmm, chunk, UVM_PMM_GPU_CHUNK_STATE_FREE);
+    else
+        chunk->state = UVM_PMM_GPU_CHUNK_STATE_FREE;
 
     chunk_update_lists_locked(pmm, chunk);
 }
@@ -2373,8 +2394,8 @@ static void free_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
         try_free = is_root;
     }
     else {
-        // Freeing a chunk can only fail if it requires merging. Take the PMM lock
-        // and free it with merges supported.
+        // Freeing a chunk can only fail if it requires merging. Take the PMM
+        // lock and free it with merges supported.
         uvm_mutex_lock(&pmm->lock);
         free_chunk_with_merges(pmm, chunk);
         uvm_mutex_unlock(&pmm->lock);
@@ -2904,134 +2925,6 @@ cleanup:
     return status;
 }
 
-typedef struct
-{
-    // Start/end of the physical region to be traversed (IN)
-    NvU64 phys_start;
-    NvU64 phys_end;
-
-    // Pointer to the array of mappins where to store results (OUT)
-    uvm_reverse_map_t *mappings;
-
-    // Number of entries written to mappings (OUT)
-    NvU32 num_mappings;
-} get_chunk_mappings_data_t;
-
-// Chunk traversal function used for phys-to-virt translation. These are the
-// possible return values.
-//
-// - NV_ERR_OUT_OF_RANGE: no allocated physical chunks were found
-// - NV_ERR_MORE_DATA_AVAILABLE: allocated physical chunks were found
-// - NV_OK: allocated physical chunks may have been found. Check num_mappings
-static NV_STATUS get_chunk_mappings_in_range(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, void *data)
-{
-    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
-    get_chunk_mappings_data_t *get_chunk_mappings_data = (get_chunk_mappings_data_t *)data;
-    NvU64 chunk_end = chunk->address + uvm_gpu_chunk_get_size(chunk) - 1;
-
-    uvm_assert_mutex_locked(&pmm->lock);
-
-    // Kernel chunks do not have assigned VA blocks so we can just skip them
-    if (chunk->type == UVM_PMM_GPU_MEMORY_TYPE_KERNEL)
-        return NV_WARN_NOTHING_TO_DO;
-
-    // This chunk is located before the requested physical range. Skip its
-    // children and keep going
-    if (chunk_end < get_chunk_mappings_data->phys_start)
-        return NV_WARN_NOTHING_TO_DO;
-
-    // We are beyond the search phys range. Stop traversing.
-    if (chunk->address > get_chunk_mappings_data->phys_end) {
-        if (get_chunk_mappings_data->num_mappings > 0)
-            return NV_ERR_MORE_DATA_AVAILABLE;
-        else
-            return NV_ERR_OUT_OF_RANGE;
-    }
-
-    uvm_spin_lock(&pmm->list_lock);
-
-    // Return results for allocated leaf chunks, only
-    if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) {
-        uvm_reverse_map_t *reverse_map;
-
-        UVM_ASSERT(chunk->va_block);
-        uvm_va_block_retain(chunk->va_block);
-
-        reverse_map = &get_chunk_mappings_data->mappings[get_chunk_mappings_data->num_mappings];
-
-        reverse_map->va_block = chunk->va_block;
-        reverse_map->region = uvm_va_block_region(chunk->va_block_page_index,
-                                                  chunk->va_block_page_index + uvm_gpu_chunk_get_size(chunk) / PAGE_SIZE);
-        reverse_map->owner = gpu->id;
-
-        // If we land in the middle of a chunk, adjust the offset
-        if (get_chunk_mappings_data->phys_start > chunk->address) {
-            NvU64 offset = get_chunk_mappings_data->phys_start - chunk->address;
-
-            reverse_map->region.first += offset / PAGE_SIZE;
-        }
-
-        // If the physical range doesn't cover the whole chunk, adjust num_pages
-        if (get_chunk_mappings_data->phys_end < chunk_end)
-            reverse_map->region.outer -= (chunk_end - get_chunk_mappings_data->phys_end) / PAGE_SIZE;
-
-        ++get_chunk_mappings_data->num_mappings;
-    }
-
-    uvm_spin_unlock(&pmm->list_lock);
-
-    return NV_OK;
-}
-
-NvU32 uvm_pmm_gpu_phys_to_virt(uvm_pmm_gpu_t *pmm, NvU64 phys_addr, NvU64 region_size, uvm_reverse_map_t *out_mappings)
-{
-    NvU64 chunk_base_addr = UVM_ALIGN_DOWN(phys_addr, UVM_CHUNK_SIZE_MAX);
-    NvU64 size_in_chunk = min(UVM_CHUNK_SIZE_MAX - (phys_addr - chunk_base_addr), region_size);
-    NvU32 num_mappings = 0;
-
-    UVM_ASSERT(PAGE_ALIGNED(phys_addr));
-    UVM_ASSERT(PAGE_ALIGNED(region_size));
-
-    uvm_mutex_lock(&pmm->lock);
-
-    // Traverse the whole requested region
-    do {
-        NV_STATUS status = NV_OK;
-        uvm_gpu_root_chunk_t *root_chunk = root_chunk_from_address(pmm, phys_addr);
-        uvm_gpu_chunk_t *chunk = &root_chunk->chunk;
-        get_chunk_mappings_data_t get_chunk_mappings_data;
-
-        get_chunk_mappings_data.phys_start = phys_addr;
-        get_chunk_mappings_data.phys_end = phys_addr + size_in_chunk - 1;
-        get_chunk_mappings_data.mappings = out_mappings + num_mappings;
-        get_chunk_mappings_data.num_mappings = 0;
-
-        // Walk the chunks for the current root chunk
-        status = chunk_walk_pre_order(pmm,
-                                      chunk,
-                                      get_chunk_mappings_in_range,
-                                      &get_chunk_mappings_data);
-        if (status == NV_ERR_OUT_OF_RANGE)
-            break;
-
-        if (get_chunk_mappings_data.num_mappings > 0) {
-            UVM_ASSERT(status == NV_OK || status == NV_ERR_MORE_DATA_AVAILABLE);
-            num_mappings += get_chunk_mappings_data.num_mappings;
-        }
-        else {
-            UVM_ASSERT(status == NV_OK);
-        }
-
-        region_size -= size_in_chunk;
-        phys_addr += size_in_chunk;
-        size_in_chunk = min((NvU64)UVM_CHUNK_SIZE_MAX, region_size);
-    } while (region_size > 0);
-
-    uvm_mutex_unlock(&pmm->lock);
-
-    return num_mappings;
-}
-
 #if UVM_IS_CONFIG_HMM()
 
 uvm_gpu_chunk_t *uvm_pmm_devmem_page_to_chunk(struct page *page)
@@ -3092,6 +2985,11 @@ static bool uvm_pmm_gpu_check_orphan_pages(uvm_pmm_gpu_t *pmm)
             break;
         }
 
+        if (page->zone_device_data) {
+            ret = false;
+            break;
+        }
+
         if (page_count(page)) {
             ret = false;
             break;
@@ -3106,6 +3004,14 @@ static void devmem_page_free(struct page *page)
     uvm_gpu_chunk_t *chunk = uvm_pmm_devmem_page_to_chunk(page);
     uvm_gpu_t *gpu = uvm_gpu_chunk_get_gpu(chunk);
 
+    if (chunk->va_block) {
+        uvm_va_space_t *va_space = chunk->va_block->hmm.va_space;
+
+        UVM_ASSERT(va_space);
+        atomic64_dec(&va_space->hmm.allocated_page_count);
+        UVM_ASSERT(atomic64_read(&va_space->hmm.allocated_page_count) >= 0);
+    }
+
     page->zone_device_data = NULL;
 
     // We should be calling free_chunk() except that it acquires a mutex and
@@ -3115,7 +3021,19 @@ static void devmem_page_free(struct page *page)
     spin_lock(&gpu->pmm.list_lock.lock);
 
     UVM_ASSERT(chunk->is_referenced);
+
+    chunk->va_block = NULL;
     chunk->is_referenced = false;
+
+    if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_ALLOCATED) {
+        list_del_init(&chunk->list);
+        chunk_pin(&gpu->pmm, chunk);
+    }
+    else {
+        UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
+        UVM_ASSERT(list_empty(&chunk->list));
+    }
+
     list_add_tail(&chunk->list, &gpu->pmm.root_chunks.va_block_lazy_free);
 
     spin_unlock(&gpu->pmm.list_lock.lock);
@@ -3132,7 +3050,7 @@ static vm_fault_t devmem_fault(struct vm_fault *vmf)
     if (!va_space)
         return VM_FAULT_SIGBUS;
 
-    return uvm_va_space_cpu_fault_hmm(va_space, vmf->vma, vmf);
+    return uvm_va_space_cpu_fault_hmm(va_space, vmf);
 }
 
 static vm_fault_t devmem_fault_entry(struct vm_fault *vmf)
@@ -3211,10 +3129,116 @@ err:
     return NULL;
 }
 
+unsigned long uvm_pmm_gpu_devmem_get_pfn(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+{
+    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
+    unsigned long devmem_start = gpu->parent->devmem->pagemap.range.start;
+
+    return (devmem_start + chunk->address) >> PAGE_SHIFT;
+}
+#else // UVM_IS_CONFIG_HMM()
+static void *devmem_alloc_pagemap(unsigned long size) { return NULL; }
+static void *devmem_reuse_pagemap(unsigned long size) { return NULL; }
+#endif // UVM_IS_CONFIG_HMM()
+
+#if (UVM_CDMM_PAGES_SUPPORTED() || defined(CONFIG_PCI_P2PDMA)) && defined(NV_STRUCT_PAGE_HAS_ZONE_DEVICE_DATA)
+static void device_p2p_page_free_wake(struct nv_kref *ref)
+{
+    uvm_device_p2p_mem_t *p2p_mem = container_of(ref, uvm_device_p2p_mem_t, refcount);
+    wake_up(&p2p_mem->waitq);
+}
+
+static void device_p2p_page_free(struct page *page)
+{
+    uvm_device_p2p_mem_t *p2p_mem = page->zone_device_data;
+
+    page->zone_device_data = NULL;
+    nv_kref_put(&p2p_mem->refcount, device_p2p_page_free_wake);
+}
+#endif
+
+#if UVM_CDMM_PAGES_SUPPORTED()
+static void device_coherent_page_free(struct page *page)
+{
+    device_p2p_page_free(page);
+}
+
+static const struct dev_pagemap_ops uvm_device_coherent_pgmap_ops =
+{
+    .page_free = device_coherent_page_free,
+};
+
+static NV_STATUS uvm_pmm_cdmm_init(uvm_parent_gpu_t *parent_gpu)
+{
+    uvm_pmm_gpu_devmem_t *devmem;
+    void *ptr;
+    NV_STATUS status;
+
+    UVM_ASSERT(!uvm_hmm_is_enabled_system_wide());
+
+    list_for_each_entry(devmem, &g_uvm_global.devmem_ranges.list, list_node) {
+        if (devmem->pagemap.range.start == parent_gpu->system_bus.memory_window_start) {
+            UVM_ASSERT(devmem->pagemap.type == MEMORY_DEVICE_COHERENT);
+            UVM_ASSERT(devmem->pagemap.range.end ==
+                       SUBSECTION_ALIGN_UP(parent_gpu->system_bus.memory_window_end >> PAGE_SHIFT) << PAGE_SHIFT);
+            list_del(&devmem->list_node);
+            parent_gpu->devmem = devmem;
+            parent_gpu->device_p2p_initialised = true;
+            return NV_OK;
+        }
+    }
+
+    devmem = kzalloc(sizeof(*devmem), GFP_KERNEL);
+    if (!devmem)
+        goto err;
+
+    devmem->size = parent_gpu->system_bus.memory_window_end - parent_gpu->system_bus.memory_window_start;
+    devmem->pagemap.type = MEMORY_DEVICE_COHERENT;
+    devmem->pagemap.range.start = parent_gpu->system_bus.memory_window_start;
+    devmem->pagemap.range.end = SUBSECTION_ALIGN_UP(parent_gpu->system_bus.memory_window_end >> PAGE_SHIFT) << PAGE_SHIFT;
+    devmem->pagemap.nr_range = 1;
+    devmem->pagemap.ops = &uvm_device_coherent_pgmap_ops;
+    devmem->pagemap.owner = &g_uvm_global;
+
+    // Numa node ID doesn't matter for ZONE_DEVICE coherent pages.
+    ptr = memremap_pages(&devmem->pagemap, NUMA_NO_NODE);
+    if (IS_ERR(ptr)) {
+        UVM_ERR_PRINT("memremap_pages() err %ld\n", PTR_ERR(ptr));
+        status = errno_to_nv_status(PTR_ERR(ptr));
+        goto err_free;
+    }
+
+    parent_gpu->devmem = devmem;
+    parent_gpu->device_p2p_initialised = true;
+
+    return NV_OK;
+
+err_free:
+    kfree(devmem);
+
+err:
+    return NV_ERR_NOT_SUPPORTED;
+}
+
+static void uvm_pmm_cdmm_deinit(uvm_parent_gpu_t *parent_gpu)
+{
+    parent_gpu->device_p2p_initialised = false;
+    list_add_tail(&parent_gpu->devmem->list_node, &g_uvm_global.devmem_ranges.list);
+    parent_gpu->devmem = NULL;
+}
+#else // UVM_CDMM_PAGES_SUPPORTED
+static NV_STATUS uvm_pmm_cdmm_init(uvm_parent_gpu_t *parent_gpu) { return NV_OK; }
+static void uvm_pmm_cdmm_deinit(uvm_parent_gpu_t *parent_gpu) {}
+#endif // UVM_CDMM_PAGES_SUPPORTED
+
+#if UVM_IS_CONFIG_HMM() || UVM_CDMM_PAGES_SUPPORTED()
 NV_STATUS uvm_pmm_devmem_init(uvm_parent_gpu_t *gpu)
 {
     // Create a DEVICE_PRIVATE page for every GPU page available on the parent.
     unsigned long size = gpu->max_allocatable_address;
+
+    if (gpu->cdmm_enabled)
+        return uvm_pmm_cdmm_init(gpu);
 
     if (!uvm_hmm_is_enabled_system_wide()) {
         gpu->devmem = NULL;
@@ -3233,6 +3257,11 @@ NV_STATUS uvm_pmm_devmem_init(uvm_parent_gpu_t *gpu)
 
 void uvm_pmm_devmem_deinit(uvm_parent_gpu_t *gpu)
 {
+    if (gpu->cdmm_enabled && gpu->devmem) {
+        uvm_pmm_cdmm_deinit(gpu);
+        return;
+    }
+
     if (!gpu->devmem)
         return;
 
@@ -3247,81 +3276,70 @@ void uvm_pmm_devmem_exit(void)
     list_for_each_entry_safe(devmem, devmem_next, &g_uvm_global.devmem_ranges.list, list_node) {
         list_del(&devmem->list_node);
         memunmap_pages(&devmem->pagemap);
-        release_mem_region(devmem->pagemap.range.start, range_len(&devmem->pagemap.range));
+        if (devmem->pagemap.type == MEMORY_DEVICE_PRIVATE)
+            release_mem_region(devmem->pagemap.range.start, range_len(&devmem->pagemap.range));
         kfree(devmem);
     }
 }
-
-unsigned long uvm_pmm_gpu_devmem_get_pfn(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
-{
-    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
-    unsigned long devmem_start = gpu->parent->devmem->pagemap.range.start;
-
-    return (devmem_start + chunk->address) >> PAGE_SHIFT;
-}
-
-#endif // UVM_IS_CONFIG_HMM()
+#else
+NV_STATUS uvm_pmm_devmem_init(uvm_parent_gpu_t *gpu) { return NV_OK; }
+void uvm_pmm_devmem_deinit(uvm_parent_gpu_t *gpu) {}
+void uvm_pmm_devmem_exit(void) {}
+#endif
 
 #if !UVM_IS_CONFIG_HMM()
-NV_STATUS uvm_pmm_devmem_init(uvm_parent_gpu_t *gpu)
-{
-    return NV_OK;
-}
-
-void uvm_pmm_devmem_deinit(uvm_parent_gpu_t *gpu)
-{
-}
-
 static bool uvm_pmm_gpu_check_orphan_pages(uvm_pmm_gpu_t *pmm)
 {
     return true;
 }
 #endif // UVM_IS_CONFIG_HMM()
 
-#if defined(CONFIG_PCI_P2PDMA) && defined(NV_STRUCT_PAGE_HAS_ZONE_DEVICE_DATA)
-static void device_p2p_page_free_wake(struct nv_kref *ref)
-{
-    uvm_device_p2p_mem_t *p2p_mem = container_of(ref, uvm_device_p2p_mem_t, refcount);
-    wake_up(&p2p_mem->waitq);
-}
-
-static void device_p2p_page_free(struct page *page)
-{
-    uvm_device_p2p_mem_t *p2p_mem = page->zone_device_data;
-
-    page->zone_device_data = NULL;
-    nv_kref_put(&p2p_mem->refcount, device_p2p_page_free_wake);
-}
+// PCI P2PDMA pages are not well supported by the kernel/architecture on all
+// ARM64 based systems so disable support for those systems.
+// TODO: Bug 5303506: ARM64: P2PDMA pages cannot be accessed from the CPU on
+// ARM
+#if defined(CONFIG_PCI_P2PDMA) && defined(NV_STRUCT_PAGE_HAS_ZONE_DEVICE_DATA) && !defined(NVCPU_AARCH64)
 
 static const struct dev_pagemap_ops uvm_device_p2p_pgmap_ops =
 {
     .page_free = device_p2p_page_free,
 };
 
-void uvm_pmm_gpu_device_p2p_init(uvm_gpu_t *gpu)
+void uvm_pmm_gpu_device_p2p_init(uvm_parent_gpu_t *parent_gpu)
 {
-    unsigned long pci_start_pfn = pci_resource_start(gpu->parent->pci_dev,
-                                                     uvm_device_p2p_static_bar(gpu)) >> PAGE_SHIFT;
-    unsigned long pci_end_pfn = pci_start_pfn + (gpu->mem_info.static_bar1_size >> PAGE_SHIFT);
+    unsigned long pci_start_pfn = pci_resource_start(parent_gpu->pci_dev,
+                                                     uvm_device_p2p_static_bar(parent_gpu)) >> PAGE_SHIFT;
+    unsigned long pci_end_pfn = pci_start_pfn + (parent_gpu->static_bar1_size >> PAGE_SHIFT);
     struct page *p2p_page;
 
-    gpu->device_p2p_initialised = false;
-    uvm_mutex_init(&gpu->device_p2p_lock, UVM_LOCK_ORDER_GLOBAL);
+    if (uvm_parent_gpu_is_coherent(parent_gpu)) {
+        // P2PDMA support with CDMM enabled requires special
+        // MEMORY_DEVICE_COHERENT pages to have been allocated which will have
+        // also set the p2p initialised state if successful.
+        if (parent_gpu->cdmm_enabled)
+            return;
 
-    if (uvm_parent_gpu_is_coherent(gpu->parent)) {
-        // A coherent system uses normal struct pages.
-        gpu->device_p2p_initialised = true;
+        parent_gpu->device_p2p_initialised = true;
         return;
     }
 
-    // RM sets this when it has created a contiguous BAR mapping large enough to
-    // cover all of GPU memory that will be allocated to userspace buffers. This
-    // is required to support the P2PDMA feature to ensure we have a P2PDMA page
-    // available for every mapping.
-    if (!gpu->mem_info.static_bar1_size)
+    parent_gpu->device_p2p_initialised = false;
+
+    // RM sets static_bar1_size when it has created a contiguous BAR mapping
+    // large enough to cover all of GPU memory that will be allocated to
+    // userspace buffers. This is required to support the P2PDMA feature to
+    // ensure we have a P2PDMA page available for every mapping.
+    //
+    // Due to current limitations in the Linux kernel we can only create
+    // the P2PDMA pages if the BAR1 region has not already been mapped
+    // write-combined. By default RM maps the region write-combined, but this
+    // can be disabled by setting the RmForceDisableIomapWC regkey which allows
+    // creation of the P2PDMA pages.
+    // TODO: Bug 5044562: P2PDMA pages require the PCIe BAR to be mapped UC
+    if (!parent_gpu->static_bar1_size || parent_gpu->static_bar1_write_combined)
         return;
 
-    if (pci_p2pdma_add_resource(gpu->parent->pci_dev, uvm_device_p2p_static_bar(gpu), 0, 0)) {
+    if (pci_p2pdma_add_resource(parent_gpu->pci_dev, uvm_device_p2p_static_bar(parent_gpu), 0, 0)) {
         UVM_ERR_PRINT("Unable to initialse PCI P2PDMA pages\n");
         return;
     }
@@ -3333,44 +3351,42 @@ void uvm_pmm_gpu_device_p2p_init(uvm_gpu_t *gpu)
     // TODO: Bug 4672502: [Linux Upstream][UVM] Allow drivers to manage and
     // allocate PCI P2PDMA pages directly
     p2p_page = pfn_to_page(pci_start_pfn);
-    p2p_page->pgmap->ops = &uvm_device_p2p_pgmap_ops;
+    page_pgmap(p2p_page)->ops = &uvm_device_p2p_pgmap_ops;
     for (; page_to_pfn(p2p_page) < pci_end_pfn; p2p_page++)
         p2p_page->zone_device_data = NULL;
 
-    gpu->device_p2p_initialised = true;
+    parent_gpu->device_p2p_initialised = true;
 }
 
-void uvm_pmm_gpu_device_p2p_deinit(uvm_gpu_t *gpu)
+void uvm_pmm_gpu_device_p2p_deinit(uvm_parent_gpu_t *parent_gpu)
 {
-    unsigned long pci_start_pfn = pci_resource_start(gpu->parent->pci_dev,
-                                                     uvm_device_p2p_static_bar(gpu)) >> PAGE_SHIFT;
-    struct page *p2p_page;
+    if (parent_gpu->device_p2p_initialised && !uvm_parent_gpu_is_coherent(parent_gpu)) {
+        struct page *p2p_page = pfn_to_page(pci_resource_start(parent_gpu->pci_dev,
+                                            uvm_device_p2p_static_bar(parent_gpu)) >> PAGE_SHIFT);
 
-    if (gpu->device_p2p_initialised && !uvm_parent_gpu_is_coherent(gpu->parent)) {
-        p2p_page = pfn_to_page(pci_start_pfn);
-        devm_memunmap_pages(&gpu->parent->pci_dev->dev, p2p_page->pgmap);
+        devm_memunmap_pages(&parent_gpu->pci_dev->dev, page_pgmap(p2p_page));
     }
 
-    gpu->device_p2p_initialised = false;
+    parent_gpu->device_p2p_initialised = false;
 }
 #else // CONFIG_PCI_P2PDMA
 
 // Coherent platforms can do P2PDMA without CONFIG_PCI_P2PDMA
-void uvm_pmm_gpu_device_p2p_init(uvm_gpu_t *gpu)
+void uvm_pmm_gpu_device_p2p_init(uvm_parent_gpu_t *parent_gpu)
 {
-    gpu->device_p2p_initialised = false;
-    uvm_mutex_init(&gpu->device_p2p_lock, UVM_LOCK_ORDER_GLOBAL);
+    if (uvm_parent_gpu_is_coherent(parent_gpu)) {
+        if (parent_gpu->cdmm_enabled)
+            return;
 
-    if (uvm_parent_gpu_is_coherent(gpu->parent)) {
         // A coherent system uses normal struct pages.
-        gpu->device_p2p_initialised = true;
+        parent_gpu->device_p2p_initialised = true;
         return;
     }
 }
 
-void uvm_pmm_gpu_device_p2p_deinit(uvm_gpu_t *gpu)
+void uvm_pmm_gpu_device_p2p_deinit(uvm_parent_gpu_t *parent_gpu)
 {
-    gpu->device_p2p_initialised = false;
+    parent_gpu->device_p2p_initialised = false;
 }
 #endif // CONFIG_PCI_P2PDMA
 
@@ -3385,6 +3401,7 @@ static void process_lazy_free(uvm_pmm_gpu_t *pmm)
     // is empty.
     while (!list_empty(&pmm->root_chunks.va_block_lazy_free)) {
         chunk = list_first_entry(&pmm->root_chunks.va_block_lazy_free, uvm_gpu_chunk_t, list);
+        UVM_ASSERT(chunk->state == UVM_PMM_GPU_CHUNK_STATE_TEMP_PINNED);
         list_del_init(&chunk->list);
         uvm_spin_unlock(&pmm->list_lock);
 
@@ -3410,6 +3427,7 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
         { 0, uvm_mem_kernel_chunk_sizes(gpu)},
     };
     NV_STATUS status = NV_OK;
+    uvm_pmm_alloc_list_t alloc_list;
     size_t i, j, k;
 
     // UVM_CHUNK_SIZE_INVALID is UVM_CHUNK_SIZE_MAX shifted left by 1. This
@@ -3424,8 +3442,10 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
                 INIT_LIST_HEAD(&pmm->free_list[i][j][k]);
         }
     }
-    INIT_LIST_HEAD(&pmm->root_chunks.va_block_used);
-    INIT_LIST_HEAD(&pmm->root_chunks.va_block_unused);
+
+    for (alloc_list = 0; alloc_list < UVM_PMM_ALLOC_LIST_COUNT; alloc_list++)
+        INIT_LIST_HEAD(&pmm->root_chunks.alloc_list[alloc_list]);
+
     INIT_LIST_HEAD(&pmm->root_chunks.va_block_lazy_free);
     nv_kthread_q_item_init(&pmm->root_chunks.va_block_lazy_free_q_item, process_lazy_free_entry, pmm);
 
@@ -3437,6 +3457,7 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
 
     for (i = 0; i < UVM_PMM_GPU_MEMORY_TYPE_COUNT; i++) {
         pmm->chunk_sizes[i] = 0;
+
         // Add the common root chunk size to all memory types
         pmm->chunk_sizes[i] |= UVM_CHUNK_SIZE_MAX;
         for (j = 0; j < ARRAY_SIZE(chunk_size_init); j++)
@@ -3444,7 +3465,9 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
 
         UVM_ASSERT(pmm->chunk_sizes[i] < UVM_CHUNK_SIZE_INVALID);
         UVM_ASSERT_MSG(hweight_long(pmm->chunk_sizes[i]) <= UVM_MAX_CHUNK_SIZES,
-                "chunk sizes %lu, max chunk sizes %u\n", hweight_long(pmm->chunk_sizes[i]), UVM_MAX_CHUNK_SIZES);
+                       "chunk sizes %lu, max chunk sizes %u\n",
+                       hweight_long(pmm->chunk_sizes[i]),
+                       UVM_MAX_CHUNK_SIZES);
     }
 
     status = init_caches(pmm);
@@ -3452,9 +3475,9 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
         goto cleanup;
 
     // Assert that max physical address of the GPU is not unreasonably big for
-    // creating the flat array of root chunks. 256GB should provide a reasonable
-    // amount of future-proofing and results in 128K chunks which is still
-    // manageable.
+    // creating the flat array of root chunks. UVM_GPU_MAX_PHYS_MEM should
+    // provide a reasonable amount of future-proofing and results in 512K chunks
+    // which is still manageable.
     UVM_ASSERT_MSG(gpu->mem_info.max_allocatable_address < UVM_GPU_MAX_PHYS_MEM,
                    "Max physical address 0x%llx exceeds limit of 0x%llx\n",
                    gpu->mem_info.max_allocatable_address,
@@ -3480,7 +3503,6 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
         chunk->state = UVM_PMM_GPU_CHUNK_STATE_PMA_OWNED;
         uvm_gpu_chunk_set_size(chunk, UVM_CHUNK_SIZE_MAX);
         chunk->address = i * UVM_CHUNK_SIZE_MAX;
-        chunk->va_block_page_index = PAGES_PER_UVM_VA_BLOCK;
     }
 
     status = uvm_bit_locks_init(&pmm->root_chunks.bitlocks, pmm->root_chunks.count, UVM_LOCK_ORDER_PMM_ROOT_CHUNK);
@@ -3538,9 +3560,9 @@ void uvm_pmm_gpu_deinit(uvm_pmm_gpu_t *pmm)
 
     gpu = uvm_pmm_to_gpu(pmm);
 
-    UVM_ASSERT(uvm_pmm_gpu_check_orphan_pages(pmm));
     nv_kthread_q_flush(&gpu->parent->lazy_free_q);
     UVM_ASSERT(list_empty(&pmm->root_chunks.va_block_lazy_free));
+    UVM_ASSERT(uvm_pmm_gpu_check_orphan_pages(pmm));
     release_free_root_chunks(pmm);
 
     if (gpu->mem_info.size != 0 && gpu_supports_pma_eviction(gpu))
@@ -3932,4 +3954,56 @@ NV_STATUS uvm_test_pmm_query_pma_stats(UVM_TEST_PMM_QUERY_PMA_STATS_PARAMS *para
 
     uvm_gpu_release(gpu);
     return NV_OK;
+}
+
+NV_STATUS uvm_test_pmm_get_alloc_list(UVM_TEST_PMM_GET_ALLOC_LIST_PARAMS *params, struct file *filp)
+{
+    uvm_va_space_t *va_space = uvm_va_space_get(filp);
+    uvm_gpu_t *gpu;
+    uvm_va_block_t *va_block;
+    uvm_gpu_chunk_t *chunk;
+    NV_STATUS status = NV_OK;
+
+    // -Wall implies -Wenum-compare, so cast through int to avoid warnings
+    BUILD_BUG_ON((int)UVM_TEST_PMM_ALLOC_LIST_UNUSED    != (int)UVM_PMM_ALLOC_LIST_UNUSED);
+    BUILD_BUG_ON((int)UVM_TEST_PMM_ALLOC_LIST_DISCARDED != (int)UVM_PMM_ALLOC_LIST_DISCARDED);
+    BUILD_BUG_ON((int)UVM_TEST_PMM_ALLOC_LIST_USED      != (int)UVM_PMM_ALLOC_LIST_USED);
+    BUILD_BUG_ON((int)UVM_TEST_PMM_ALLOC_LIST_COUNT     != (int)UVM_PMM_ALLOC_LIST_COUNT);
+
+    uvm_va_space_down_read(va_space);
+
+    gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
+    if (!gpu) {
+        status = NV_ERR_INVALID_DEVICE;
+        goto out;
+    }
+
+    status = uvm_va_block_find(va_space, params->address, &va_block);
+    if (status != NV_OK)
+        goto out;
+
+    // No chunk or chunk not on an alloc list
+    status = NV_ERR_INVALID_STATE;
+
+    uvm_mutex_lock(&va_block->lock);
+
+    chunk = uvm_va_block_lookup_gpu_chunk(va_block, gpu, params->address);
+    if (chunk) {
+        uvm_pmm_alloc_list_t alloc_list;
+
+        uvm_spin_lock(&gpu->pmm.list_lock);
+        alloc_list = get_alloc_list(&gpu->pmm, chunk);
+        uvm_spin_unlock(&gpu->pmm.list_lock);
+
+        if (alloc_list != UVM_PMM_ALLOC_LIST_COUNT) {
+            params->list_type = alloc_list;
+            status = NV_OK;
+        }
+    }
+
+    uvm_mutex_unlock(&va_block->lock);
+
+out:
+    uvm_va_space_up_read(va_space);
+    return status;
 }

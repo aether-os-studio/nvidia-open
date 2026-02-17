@@ -46,7 +46,7 @@
 #include "vgpu/vgpu_events.h"
 #include "gpu/mem_sys/kern_mem_sys.h"
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-#include "diagnostics/code_coverage_mgr.h"
+#include "diagnostics/instrumentation_manager.h"
 #endif
 
 ct_assert(NVA084_MAX_VMMU_SEGMENTS == NV2080_CTRL_MAX_VMMU_SEGMENTS);
@@ -113,6 +113,7 @@ kernelhostvgpudeviceapiConstruct_IMPL
                                    pAllocParams->bDisableDefaultSmcExecPartRestore,
                                    pAllocParams->placementId,
                                    pAllocParams->vgpuDevName,
+                                   pAllocParams->accountingPid,
                                    &pKernelHostVgpuDevice);
     if (status != NV_OK)
     {
@@ -1065,7 +1066,7 @@ kernelhostvgpudeviceapiCtrlCmdBootloadVgpuTask_IMPL
 
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
     OBJSYS *pSys = SYS_GET_INSTANCE();
-    codecovmgrResetCoverage(pSys->pCodeCovMgr, pKernelHostVgpuDevice->gfid, pGpu->gpuInstance);
+    instrumentationmanagerReset(pSys->pInstrumentationManager, pKernelHostVgpuDevice->gfid, pGpu->gpuInstance);
 #endif
     if (status != NV_OK && pBootloadParams != NULL)
     {

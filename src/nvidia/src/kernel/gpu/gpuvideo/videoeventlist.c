@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2020-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -44,6 +44,7 @@
 #include "kernel/gpu/video/kernel_video_engine.h"
 #include "kernel/gpu/fifo/kernel_channel_group.h"
 #include "kernel/gpu/bus/kern_bus.h"
+#include "kernel/virtualization/hypervisor/hypervisor.h"
 
 #include "class/cl90cd.h"
 #include "class/cl90cdtypes.h"
@@ -68,7 +69,7 @@ videoEventTraceCtxInit
     MEMORY_DESCRIPTOR *pCtxMemDesc;
     VIDEO_ENGINE_EVENT__LOG_INFO logInfo;
 
-    if (RMCFG_FEATURE_PLATFORM_GSP || !IS_VIDEO_ENGINE(engDesc))
+    if (RMCFG_FEATURE_PLATFORM_GSP || !IS_VIDEO_ENGINE(engDesc) || hypervisorIsVgxHyper())
         return NV_OK;
 
     pKernelVideoEngine = kvidengFromEngDesc(pGpu, engDesc);
@@ -421,7 +422,12 @@ _videoTimerCallback
 {
     NV_STATUS status;
 
-    NV_CHECK_OK(status, LEVEL_ERROR, osQueueWorkItemWithFlags(pGpu, _videoOsWorkItem, NULL, OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_DEVICE));
+    NV_CHECK_OK(status,
+                LEVEL_ERROR,
+                osQueueWorkItem(pGpu,
+                                _videoOsWorkItem,
+                                NULL,
+                                (OsQueueWorkItemFlags){.bLockGpuGroupDevice = NV_TRUE}));
 
     // TMR_FLAG_RECUR does not work, so reschedule it here.
     NV_CHECK_OK_OR_CAPTURE_FIRST_ERROR(status, LEVEL_ERROR, tmrEventScheduleRel(pTmr, pTmrEvent, NV_VIDEO_TRACE_CALLBACK_TIME_NS));

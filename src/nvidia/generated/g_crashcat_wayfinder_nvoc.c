@@ -90,6 +90,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__CrashCatWayfinder =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_crashcatWayfinderDestruct(CrashCatWayfinder*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_CrashCatWayfinder(CrashCatWayfinder *pThis) {
     __nvoc_crashcatWayfinderDestruct(pThis);
@@ -168,10 +169,19 @@ NV_STATUS __nvoc_objCreate_CrashCatWayfinder(CrashCatWayfinder **ppThis, Dynamic
     Object *pParentObj = NULL;
     CrashCatWayfinder *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(CrashCatWayfinder), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(CrashCatWayfinder));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(CrashCatWayfinder));
@@ -189,6 +199,7 @@ NV_STATUS __nvoc_objCreate_CrashCatWayfinder(CrashCatWayfinder **ppThis, Dynamic
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__CrashCatWayfinder(pThis, CrashCatWayfinderHal_version);
     status = __nvoc_ctor_CrashCatWayfinder(pThis, arg_wfl0);
     if (status != NV_OK) goto __nvoc_objCreate_CrashCatWayfinder_cleanup;
@@ -196,24 +207,28 @@ NV_STATUS __nvoc_objCreate_CrashCatWayfinder(CrashCatWayfinder **ppThis, Dynamic
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_CrashCatWayfinder_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(CrashCatWayfinder));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 

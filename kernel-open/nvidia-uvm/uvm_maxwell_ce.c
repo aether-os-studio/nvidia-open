@@ -268,7 +268,7 @@ void uvm_hal_maxwell_ce_memcopy(uvm_push_t *push, uvm_gpu_address_t dst, uvm_gpu
     // Check if the copy is over NVLINK and simulate dropped traffic if there's
     // an NVLINK error.
     // Src address cannot be peer as that wouldn't pass the valid check above.
-    if (uvm_gpu_address_is_peer(gpu, dst) && uvm_gpu_get_injected_nvlink_error(gpu) != NV_OK)
+    if (uvm_gpu_get_injected_nvlink_error(gpu) != NV_OK && uvm_gpu_address_is_peer(gpu, dst))
         size = 0;
 
     gpu->parent->ce_hal->memcopy_patch_src(push, &src);

@@ -25,6 +25,9 @@
 #define GSP_INIT_ARGS_H
 
 #include "nvtypes.h"
+#include "gpu/mem_mgr/rm_page_size.h"
+
+#define WPR_ALIGNMENT RM_PAGE_SIZE_128K
 
 typedef struct {
     NvU64 sharedMemPhysAddr;

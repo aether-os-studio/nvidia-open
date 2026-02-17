@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,6 +22,7 @@
  */
 
 #include "gpu/gpu.h"
+#include "gpu/gpu_access.h"
 #include "gpu/gpu_child_class_defs.h"
 #include "os/os.h"
 #include "nverror.h"
@@ -102,7 +103,7 @@ gpuReadPassThruConfigReg_GH100
     NvU32     *pData
 )
 {
-    *pData = GPU_REG_RD32(pGpu, DEVICE_BASE(NV_EP_PCFGM) + index);
+    *pData = GPU_REG_RD32_UNCHECKED(pGpu, DEVICE_BASE(NV_EP_PCFGM) + index);
 
     return NV_OK;
 }
@@ -153,21 +154,6 @@ gpuGetIdInfo_GH100
     // For universal GPU use unlatched value
     pGpu->idInfo.PCIDeviceID = deviceId;
 
-}
-
-/*!
- * @brief Returns the physical address width for the given @ref NV_ADDRESS_SPACE
- */
-NvU32 gpuGetPhysAddrWidth_GH100
-(
-    OBJGPU          *pGpu,
-    NV_ADDRESS_SPACE addrSp
-)
-{
-    // Currently this function supports only sysmem addresses
-    NV_ASSERT_OR_RETURN(ADDR_SYSMEM == addrSp, 0);
-
-    return NV_CHIP_EXTENDED_SYSTEM_PHYSICAL_ADDRESS_BITS;
 }
 
 /**
@@ -574,6 +560,7 @@ typedef struct
 #define NVDM_PRC_PPCIE_NUM_BYTES            0x02
 #define NVDM_PRC_PPCIE_KNOB_ID              0x2D
 
+
 /*!
  * @brief Check if protected pcie is actually supported in firmware
  *
@@ -596,7 +583,7 @@ gpuIsProtectedPcieSupportedInFirmware_GH100
     prcKnobReadPayload.numBytes     = NVDM_PRC_PPCIE_NUM_BYTES;
     prcKnobReadPayload.knobId       = NVDM_PRC_PPCIE_KNOB_ID;
 
-   // This function returns an error code in case we read an invalid knob id
+    // This function returns an error code in case we read an invalid knob id
     status = kfspSendAndReadMessage(pGpu, pKernelFsp,
                                     (NvU8*)&prcKnobReadPayload,
                                     sizeof(NVDM_PAYLOAD_PRC_OBJECT_READ),

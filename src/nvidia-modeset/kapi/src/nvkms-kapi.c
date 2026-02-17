@@ -52,6 +52,7 @@
 #include <ctrl/ctrl0000/ctrl0000client.h> /* NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE_VIDMEM */
 #include <ctrl/ctrl0080/ctrl0080gpu.h> /* NV0080_CTRL_CMD_GPU_GET_NUM_SUBDEVICES */
 #include <ctrl/ctrl0080/ctrl0080fb.h> /* NV0080_CTRL_CMD_FB_GET_CAPS_V2 */
+#include <ctrl/ctrl2080/ctrl2080gpu.h> /* NV2080_CTRL_CMD_GPU_GET_INFO_V2 */
 #include <ctrl/ctrl2080/ctrl2080fb.h> /* NV2080_CTRL_CMD_FB_GET_SEMAPHORE_SURFACE_LAYOUT */
 #include <ctrl/ctrl2080/ctrl2080unix.h> /* NV2080_CTRL_CMD_OS_UNIX_GC6_BLOCKER_REFCNT */
 
@@ -71,9 +72,10 @@ ct_assert(NVKMS_KAPI_LAYER_MAX == NVKMS_MAX_LAYERS_PER_HEAD);
      (1 << NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED) | \
      (1 << NVKMS_EVENT_TYPE_FLIP_OCCURRED))
 
-static NvU32 EnumerateGpus(struct NvKmsKapiGpuInfo *kapiGpuInfo)
+static NvU32 EnumerateGpus(void (*gpuCallback)(const struct NvKmsKapiGpuInfo *info))
 {
     nv_gpu_info_t *gpu_info = NULL;
+    struct NvKmsKapiGpuInfo kapiGpuInfo;
     nvMIGDeviceDescription *activeDevices = NULL;
     NvU32 activeDeviceCount = 0;
     NvU32 gpuCount;
@@ -82,11 +84,13 @@ static NvU32 EnumerateGpus(struct NvKmsKapiGpuInfo *kapiGpuInfo)
     if (NV_OK != nvSMGGetDeviceList(&nvEvoGlobal.rmSmgContext,
                                     &activeDevices,
                                     &activeDeviceCount)) {
+        nvKmsKapiLogDebug("Failed to query SMG device list");
         return 0;
     }
 
     gpu_info = nvkms_alloc(NV_MAX_GPUS * sizeof(*gpu_info), NV_TRUE);
     if (!gpu_info) {
+        nvKmsKapiLogDebug("Out of memory");
         return 0;
     }
 
@@ -101,36 +105,31 @@ static NvU32 EnumerateGpus(struct NvKmsKapiGpuInfo *kapiGpuInfo)
         NvBool foundMig = NV_FALSE;
 
         for (NvU32 j = 0; j < activeDeviceCount; j++) {
-            /* Fail completely if we run out of array space. */
-            if (kapiGpuCount == NV_MAX_GPUS) {
-                nvKmsKapiLogDebug("Failed to enumerate devices: out of memory");
-                kapiGpuCount = 0;
-                break;
-            }
-
             /*
-             * Return an NvKmsKapiGpuInfo for each active device found for
-             * the current gpu_id. For regular GPUs this will only be one
-             * but in MIG mode the same gpu_id can host multiple MIG
-             * devices.
+             * Pass back an NvKmsKapiGpuInfo for each active device found
+             * for the current gpu_id. For regular GPUs this will only be
+             * one but in MIG mode the same gpu_id can host multiple MIG
+             * devices. In MIG mode, only offer graphics capable MIG device
+             * (SMG).
              */
             if (activeDevices[j].gpuId == gpu_info[i].gpu_id) {
-                kapiGpuInfo[kapiGpuCount].gpuInfo = gpu_info[i];
-                kapiGpuInfo[kapiGpuCount].migDevice = activeDevices[j].migDeviceId;
-                kapiGpuCount++;
                 foundMig = NV_TRUE;
+
+                if (activeDevices[j].smgAccessOk) {
+                    kapiGpuInfo.gpuInfo = gpu_info[i];
+                    kapiGpuInfo.migDevice = activeDevices[j].migDeviceId;
+                    gpuCallback(&kapiGpuInfo);
+
+                    kapiGpuCount++;
+                }
             }
         }
 
         if (!foundMig) {
-            if (kapiGpuCount == NV_MAX_GPUS) {
-                nvKmsKapiLogDebug("Failed to enumerate devices: out of memory");
-                kapiGpuCount = 0;
-                break;
-            }
+            kapiGpuInfo.gpuInfo = gpu_info[i];
+            kapiGpuInfo.migDevice = NO_MIG_DEVICE;
+            gpuCallback(&kapiGpuInfo);
 
-            kapiGpuInfo[kapiGpuCount].gpuInfo = gpu_info[i];
-            kapiGpuInfo[kapiGpuCount].migDevice = NO_MIG_DEVICE;
             kapiGpuCount++;
         }
     }
@@ -213,6 +212,7 @@ static NvBool RmAllocateDevice(struct NvKmsKapiDevice *device)
 {
     NV0080_CTRL_GPU_GET_NUM_SUBDEVICES_PARAMS getNumSubDevicesParams = { 0 };
     NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS idInfoParams = { };
+    NV2080_CTRL_GPU_GET_INFO_V2_PARAMS infoParams = { };
     NV2080_ALLOC_PARAMETERS subdevAllocParams = { 0 };
     NV0080_ALLOC_PARAMETERS allocParams = { };
     NV0080_CTRL_FB_GET_CAPS_V2_PARAMS fbCapsParams = { 0 };
@@ -339,6 +339,25 @@ static NvBool RmAllocateDevice(struct NvKmsKapiDevice *device)
 
     device->hRmSubDevice = hRmSubDevice;
 
+    /* Determine if GPU has coherent link */
+
+    infoParams.gpuInfoListSize = 1;
+    infoParams.gpuInfoList[0].index =
+        NV2080_CTRL_GPU_INFO_INDEX_COHERENT_GPU_MEMORY_MODE;
+    ret = nvRmApiControl(device->hRmClient,
+                         device->hRmSubDevice,
+                         NV2080_CTRL_CMD_GPU_GET_INFO_V2,
+                         &infoParams, sizeof(infoParams));
+    if (ret != NVOS_STATUS_SUCCESS) {
+        nvKmsKapiLogDeviceDebug(device,
+                                "Failed to determine coherent GPU memory mode");
+        device->coherentGpuMemory = NV_FALSE;
+    } else {
+        device->coherentGpuMemory =
+            (infoParams.gpuInfoList[0].data !=
+             NV2080_CTRL_GPU_INFO_INDEX_COHERENT_GPU_MEMORY_MODE_NONE);
+    }
+
     if (device->migDevice != NO_MIG_DEVICE) {
         device->smgGpuInstSubscriptionHdl     = nvKmsKapiGenerateRmHandle(device);
         device->smgComputeInstSubscriptionHdl = nvKmsKapiGenerateRmHandle(device);
@@ -429,7 +448,6 @@ static NvBool KmsAllocateDevice(struct NvKmsKapiDevice *device)
 {
     struct NvKmsAllocDeviceParams *paramsAlloc;
     NvBool status;
-    NvBool inVideoMemory = FALSE;
     NvU32 head;
     NvBool ret = FALSE;
     NvU32 layer;
@@ -503,13 +521,6 @@ static NvBool KmsAllocateDevice(struct NvKmsKapiDevice *device)
     device->caps.maxWidthInPixels      = paramsAlloc->reply.maxWidthInPixels;
     device->caps.maxHeightInPixels     = paramsAlloc->reply.maxHeightInPixels;
     device->caps.maxCursorSizeInPixels = paramsAlloc->reply.maxCursorSize;
-    device->caps.requiresVrrSemaphores = paramsAlloc->reply.requiresVrrSemaphores;
-
-    device->caps.supportsInputColorSpace =
-        paramsAlloc->reply.supportsInputColorSpace;
-    device->caps.supportsInputColorRange =
-        paramsAlloc->reply.supportsInputColorRange;
-
 
     /* XXX Add LUT support */
 
@@ -575,12 +586,8 @@ static NvBool KmsAllocateDevice(struct NvKmsKapiDevice *device)
 
     device->supportsSyncpts = paramsAlloc->reply.supportsSyncpts;
 
-    if (paramsAlloc->reply.nIsoSurfacesInVidmemOnly) {
-        inVideoMemory = TRUE;
-    }
-
     /* Allocate notifier memory */
-    if (!nvKmsKapiAllocateNotifiers(device, inVideoMemory)) {
+    if (!nvKmsKapiAllocateNotifiers(device)) {
         nvKmsKapiLogDebug(
             "Failed to allocate Notifier objects for GPU ID 0x%08x",
             device->gpuId);
@@ -693,6 +700,8 @@ NvBool nvKmsKapiAllocateSystemMemory(struct NvKmsKapiDevice *device,
 
             pIOCoherencyModes = &device->isoIOCoherencyModes;
 
+            memAllocParams.attr2 = FLD_SET_DRF(OS32, _ATTR2, _ISO,
+                                               _YES, memAllocParams.attr2);
             break;
         case NVKMS_KAPI_ALLOCATION_TYPE_NOTIFIER:
             if (layout == NvKmsSurfaceMemoryLayoutBlockLinear) {
@@ -829,6 +838,9 @@ NvBool nvKmsKapiAllocateVideoMemory(struct NvKmsKapiDevice *device,
                 memAllocParams.attr =
                     FLD_SET_DRF(OS32, _ATTR, _PHYSICALITY, _CONTIGUOUS,
                                 memAllocParams.attr);
+
+            memAllocParams.attr2 = FLD_SET_DRF(OS32, _ATTR2, _ISO,
+                                               _YES, memAllocParams.attr2);
 
             /* XXX [JRJ] Note compression and scanout do not work together on
              * any current GPUs.  However, some use cases do involve scanning
@@ -1164,7 +1176,7 @@ static NvBool GetDeviceResourcesInfo
 
     info->caps.hasVideoMemory = !device->isSOC;
     info->caps.genericPageKind = device->caps.genericPageKind;
-    info->caps.requiresVrrSemaphores = device->caps.requiresVrrSemaphores;
+    info->caps.contiguousPhysicalMappings = !device->coherentGpuMemory;
 
     info->vtFbBaseAddress = device->vtFbBaseAddress;
     info->vtFbSize = device->vtFbSize;
@@ -1239,8 +1251,6 @@ static NvBool GetDeviceResourcesInfo
     info->caps.pitchAlignment = NV_EVO_PITCH_ALIGNMENT;
 
     info->caps.supportsSyncpts = device->supportsSyncpts;
-    info->caps.supportsInputColorRange = device->caps.supportsInputColorRange;
-    info->caps.supportsInputColorSpace = device->caps.supportsInputColorSpace;
 
     info->caps.supportedCursorSurfaceMemoryFormats =
         NVBIT(NvKmsSurfaceMemoryFormatA8R8G8B8);
@@ -1605,17 +1615,15 @@ static struct NvKmsKapiMemory *AllocMemoryObjectAndHandle(
     return memory;
 }
 
-static struct NvKmsKapiMemory* AllocateVideoMemory
+static struct NvKmsKapiMemory* AllocateMemory
 (
     struct NvKmsKapiDevice *device,
-    enum NvKmsSurfaceMemoryLayout layout,
-    enum NvKmsKapiAllocationType type,
-    NvU64 size,
-    NvU8 *compressible
+    struct NvKmsKapiAllocateMemoryParams *params
 )
 {
     struct NvKmsKapiMemory *memory = NULL;
     NvU32 hRmHandle;
+    NvBool allocSucceeded;
 
     memory = AllocMemoryObjectAndHandle(device, &hRmHandle);
 
@@ -1623,64 +1631,27 @@ static struct NvKmsKapiMemory* AllocateVideoMemory
         return NULL;
     }
 
-    if (!nvKmsKapiAllocateVideoMemory(device,
-                                      hRmHandle,
-                                      layout,
-                                      size,
-                                      type,
-                                      compressible)) {
+    allocSucceeded =
+        params->useVideoMemory
+            ? nvKmsKapiAllocateVideoMemory(device, hRmHandle, params->layout,
+                                           params->size, params->type,
+                                           params->compressible)
+            : nvKmsKapiAllocateSystemMemory(device, hRmHandle, params->layout,
+                                            params->size, params->type,
+                                            params->compressible);
+    if (!allocSucceeded) {
         nvKmsKapiFreeRmHandle(device, hRmHandle);
         FreeMemory(device, memory);
         return NULL;
     }
 
     memory->hRmHandle = hRmHandle;
-    memory->size = size;
-    memory->surfaceParams.layout = layout;
-    memory->isVidmem = NV_TRUE;
+    memory->size = params->size;
+    memory->surfaceParams.layout = params->layout;
+    memory->noDisplayCaching = params->noDisplayCaching;
+    memory->isVidmem = params->useVideoMemory;
 
-    if (layout == NvKmsSurfaceMemoryLayoutBlockLinear) {
-        memory->surfaceParams.blockLinear.genericMemory = NV_TRUE;
-    }
-
-    return memory;
-}
-
-static struct NvKmsKapiMemory* AllocateSystemMemory
-(
-    struct NvKmsKapiDevice *device,
-    enum NvKmsSurfaceMemoryLayout layout,
-    enum NvKmsKapiAllocationType type,
-    NvU64 size,
-    NvU8 *compressible
-)
-{
-    struct NvKmsKapiMemory *memory = NULL;
-    NvU32 hRmHandle;
-
-    memory = AllocMemoryObjectAndHandle(device, &hRmHandle);
-
-    if (!memory) {
-        return NULL;
-    }
-
-    if (!nvKmsKapiAllocateSystemMemory(device,
-                                       hRmHandle,
-                                       layout,
-                                       size,
-                                       type,
-                                       compressible)) {
-        nvKmsKapiFreeRmHandle(device, hRmHandle);
-        FreeMemory(device, memory);
-        return NULL;
-    }
-
-    memory->hRmHandle = hRmHandle;
-    memory->size = size;
-    memory->surfaceParams.layout = layout;
-    memory->isVidmem = NV_FALSE;
-
-    if (layout == NvKmsSurfaceMemoryLayoutBlockLinear) {
+    if (params->layout == NvKmsSurfaceMemoryLayoutBlockLinear) {
         memory->surfaceParams.blockLinear.genericMemory = NV_TRUE;
     }
 
@@ -2260,7 +2231,6 @@ static NvBool GetSurfaceParams(
     NvU32 *pNumPlanes,
     enum NvKmsSurfaceMemoryLayout *pLayout,
     NvU32 *pLog2GobsPerBlockY,
-    NvBool *pNoDisplayCaching,
     NvU32 pitch[])
 {
     const NvKmsSurfaceMemoryFormatInfo *pFormatInfo =
@@ -2354,7 +2324,6 @@ static NvBool GetSurfaceParams(
     *pNumPlanes = pFormatInfo->numPlanes;
     *pLayout = layout;
     *pLog2GobsPerBlockY = log2GobsPerBlockY;
-    *pNoDisplayCaching = params->noDisplayCaching;
 
     return NV_TRUE;
 }
@@ -2373,14 +2342,12 @@ static struct NvKmsKapiSurface* CreateSurface
     NvU32 log2GobsPerBlockY = 0;
     NvU32 numPlanes = 0;
     NvU32 pitch[NVKMS_MAX_PLANES_PER_SURFACE] = { 0 };
-    NvBool noDisplayCaching = NV_FALSE;
     NvU32 i;
 
     if (!GetSurfaceParams(params,
                           &numPlanes,
                           &layout,
                           &log2GobsPerBlockY,
-                          &noDisplayCaching,
                           pitch))
     {
         goto failed;
@@ -2423,9 +2390,9 @@ static struct NvKmsKapiSurface* CreateSurface
         paramsReg.request.planes[i].rmObjectSizeInBytes = memory->size;
         paramsReg.request.planes[i].offset = params->planes[i].offset;
         paramsReg.request.planes[i].pitch = pitch[i];
-    }
 
-    paramsReg.request.noDisplayCaching = noDisplayCaching;
+        paramsReg.request.noDisplayCaching |= memory->noDisplayCaching;
+    }
 
     status = nvkms_ioctl_from_kapi(device->pKmsOpen,
                                    NVKMS_IOCTL_REGISTER_SURFACE,
@@ -3709,7 +3676,6 @@ static NvBool KmsFlip(
 
     /*! fill back flip reply */
     replyConfig->vrrFlip = params->reply.vrrFlipType;
-    replyConfig->vrrSemaphoreIndex = params->reply.vrrSemaphoreIndex;
 
     for (i = 0; i < params->request.numFlipHeads; i++) {
          const struct NvKmsKapiHeadRequestedConfig *headRequestedConfig =
@@ -3930,47 +3896,53 @@ static NvBool GetCRC32
     return NV_TRUE;
 }
 
-static NvKmsKapiSuspendResumeCallbackFunc *pSuspendResumeFunc;
+static const struct NvKmsKapiCallbacks *pCallbacks;
 
 void nvKmsKapiSuspendResume
 (
     NvBool suspend
 )
 {
-    if (pSuspendResumeFunc) {
-        pSuspendResumeFunc(suspend);
+    if (pCallbacks) {
+        pCallbacks->suspendResume(suspend);
     }
 }
 
-static void nvKmsKapiSetSuspendResumeCallback
+static void nvKmsKapiSetCallbacks
 (
-    NvKmsKapiSuspendResumeCallbackFunc *function
+    const struct NvKmsKapiCallbacks *callbacks
 )
 {
-    if (pSuspendResumeFunc && function) {
-        nvKmsKapiLogDebug("Kapi suspend/resume callback function already registered");
+    if (pCallbacks && callbacks) {
+        nvKmsKapiLogDebug("Kapi callback functions already registered");
     }
 
-    pSuspendResumeFunc = function;
+    pCallbacks = callbacks;
 }
 
-static NvBool SignalVrrSemaphore
+void nvKmsKapiRemove
 (
-    struct NvKmsKapiDevice *device,
-    NvS32 index
+    NvU32 gpuId
 )
 {
-    NvBool status = NV_TRUE;
-    struct NvKmsVrrSignalSemaphoreParams params = { };
-    params.request.deviceHandle = device->hKmsDevice;
-    params.request.vrrSemaphoreIndex = index;
-    status = nvkms_ioctl_from_kapi(device->pKmsOpen,
-                                   NVKMS_IOCTL_VRR_SIGNAL_SEMAPHORE,
-                                   &params, sizeof(params));
-    if (!status) {
-        nvKmsKapiLogDeviceDebug(device, "NVKMS VrrSignalSemaphore failed");
+    if (pCallbacks) {
+        pCallbacks->remove(gpuId);
     }
-    return status;
+}
+
+void nvKmsKapiProbe
+(
+    const nv_gpu_info_t *gpu_info
+)
+{
+    if (pCallbacks) {
+        const struct NvKmsKapiGpuInfo kapi_gpu_info = {
+            .gpuInfo = *gpu_info,
+            .migDevice = NO_MIG_DEVICE,
+        };
+
+        pCallbacks->probe(&kapi_gpu_info);
+    }
 }
 
 static NvBool CheckLutNotifier
@@ -4059,8 +4031,7 @@ NvBool nvKmsKapiGetFunctionsTableInternal
     funcsTable->getStaticDisplayInfo   = GetStaticDisplayInfo;
     funcsTable->getDynamicDisplayInfo  = GetDynamicDisplayInfo;
 
-    funcsTable->allocateVideoMemory  = AllocateVideoMemory;
-    funcsTable->allocateSystemMemory = AllocateSystemMemory;
+    funcsTable->allocateMemory       = AllocateMemory;
     funcsTable->importMemory         = ImportMemory;
     funcsTable->dupMemory            = DupMemory;
     funcsTable->exportMemory         = ExportMemory;
@@ -4097,13 +4068,12 @@ NvBool nvKmsKapiGetFunctionsTableInternal
         nvKmsKapiUnregisterSemaphoreSurfaceCallback;
     funcsTable->setSemaphoreSurfaceValue =
         nvKmsKapiSetSemaphoreSurfaceValue;
-    funcsTable->setSuspendResumeCallback = nvKmsKapiSetSuspendResumeCallback;
+    funcsTable->setCallbacks = nvKmsKapiSetCallbacks;
     funcsTable->framebufferConsoleDisabled = FramebufferConsoleDisabled;
 
     funcsTable->tryInitDisplaySemaphore = nvKmsKapiTryInitDisplaySemaphore;
     funcsTable->signalDisplaySemaphore = nvKmsKapiSignalDisplaySemaphore;
     funcsTable->cancelDisplaySemaphore = nvKmsKapiCancelDisplaySemaphore;
-    funcsTable->signalVrrSemaphore = SignalVrrSemaphore;
     funcsTable->checkLutNotifier = CheckLutNotifier;
 
     return NV_TRUE;

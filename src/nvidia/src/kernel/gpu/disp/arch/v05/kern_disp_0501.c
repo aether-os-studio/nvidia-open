@@ -206,7 +206,9 @@ static NvU32 _getDpAudioSymbolSST
                     cyclesPerPacketInc  = 5;
                     break;
             }
+            break;
         }
+
         case EIGHT_CHANNELS:
         {
             switch (laneCount)
@@ -224,6 +226,7 @@ static NvU32 _getDpAudioSymbolSST
                     cyclesPerPacketInc  = 10;
                     break;
             }
+            break;
         }
     }
 
@@ -493,7 +496,6 @@ kdispComputeDpModeSettings_v05_01
     linkDataRate = _convertLinkRateToDataRate(pDpModesetData->dp2LinkBw,
                                              pDpModesetData->bDP2xChannelCoding,
                                              pDpModesetData->bFecEnable);
-
     dpInfo->linkTotalDataRate = 8 * linkDataRate * pDpModesetData->laneCount;
 
     // SST
@@ -512,12 +514,13 @@ kdispComputeDpModeSettings_v05_01
             else
             {
                 effectiveBppxScaler = _calcEffectiveBppxScalerNonDsc(hActive, pDpModesetData->bpp, pDpModesetData->bDP2xChannelCoding,
-                                                                     pDpModesetData->bMultiStream, pDpModesetData->laneCount);        
+                                                                     pDpModesetData->bMultiStream, pDpModesetData->laneCount);
             }
         }
     }
     else
     {
+
         effectiveBppxScaler = pDpModesetData->bpp;
     }
 
@@ -679,7 +682,7 @@ kdispComputeDpModeSettings_v05_01
         {
             dpInfo->vBlankSym = vBlankSym;
         }
-        
+
         dpInfo->waterMark = _calcWatermark8b10bSST(pDpModesetData->PClkFreqHz,
                                                    linkFreqHz,
                                                    pDpModesetData->laneCount,

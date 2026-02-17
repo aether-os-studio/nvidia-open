@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,10 +27,13 @@
 #include "nverror.h"
 #include "published/blackwell/gb100/dev_pcfg_pf0.h"
 #include "published/blackwell/gb100/dev_vm.h"
+#include "published/nv_ref.h"
 #include "gpu/bif/kernel_bif.h"
 #include "platform/chipset/chipset.h"
 #include "ctrl/ctrl2080/ctrl2080bus.h"
 #include "os/os.h"
+
+#include "published/blackwell/gb100/dev_boot_zb.h"
 
 /*!
  * @brief Check if MSIX is enabled in HW
@@ -71,35 +74,6 @@ kbifIsMSIXEnabledInHW_GB100
         return FLD_TEST_DRF_NUM(_PF0, _MSIX_CAPABILITY,
                                 _HEADR_AND_CONTROL_MSIX_ENABLE, 0x1, regVal);
     }
-}
-
-/*!
- * @brief Check if access to PCI config space is enabled or not
- *
- * @param[in] pGpu        GPU object pointer
- * @param[in] pKernelBif  Kernel BIF object pointer
- *
- * @return NV_TRUE Pci IO access is enabled
- */
-NvBool
-kbifIsPciIoAccessEnabled_GB100
-(
-    OBJGPU    *pGpu,
-    KernelBif *pKernelBif
-)
-{
-    NvU32   regVal ;
-
-    if (GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_PF0_STATUS_COMMAND, &regVal) == NV_OK)
-    {
-        if (FLD_TEST_DRF(_PF0, _STATUS, _COMMAND_IO_SPACE_ENABLE, _ENABLE,
-                         regVal))
-        {
-            return NV_TRUE;
-        }
-    }
-
-    return NV_FALSE;
 }
 
 /*!
@@ -669,6 +643,48 @@ kbifEnablePcieAtomics_GB100
 }
 
 /*!
+ * @brief Try restoring BAR registers and command register using config cycles
+ *
+ * @param[in] pGpu       GPU object pointer
+ * @param[in] pKernelBif KernelBif object pointer
+ *
+ * @return    NV_OK on success
+ *            NV_ERR_INVALID_READ if the register read returns unexpected value
+ *            NV_ERR_OBJECT_NOT_FOUND if the object is not found
+ */
+NV_STATUS
+kbifRestoreBarsAndCommand_GB100
+(
+    OBJGPU    *pGpu,
+    KernelBif *pKernelBif
+)
+{
+    NvU32  *pBarRegOffsets = pKernelBif->barRegOffsets;
+    NvU32  barOffsetEntry;
+
+    // Restore all BAR registers
+    for (barOffsetEntry = 0; barOffsetEntry < KBIF_NUM_BAR_OFFSET_ENTRIES; barOffsetEntry++)
+    {
+        if (pBarRegOffsets[barOffsetEntry] != KBIF_INVALID_BAR_REG_OFFSET)
+        {
+            GPU_BUS_CFG_CYCLE_WR32(pGpu, pBarRegOffsets[barOffsetEntry],
+                                   pKernelBif->cacheData.gpuBootConfigSpace[pBarRegOffsets[barOffsetEntry]/sizeof(NvU32)]);
+        }
+    }
+
+    // Restore Device Control register
+    GPU_BUS_CFG_CYCLE_WR32(pGpu, NV_PF0_STATUS_COMMAND,
+                           pKernelBif->cacheData.gpuBootConfigSpace[NV_PF0_STATUS_COMMAND/sizeof(NvU32)]);
+
+    if (GPU_REG_RD32(pGpu, NV_PMC_BOOT_42) != pGpu->chipId0)
+    {
+        return NV_ERR_INVALID_READ;
+    }
+
+    return NV_OK;
+}
+
+/*!
  * @brief Check and cache Function level reset support
  *
  * @param[in]  pGpu        GPU object pointer
@@ -1144,4 +1160,23 @@ kbifReadPcieCplCapsFromConfigSpace_GB100
     {
         *pBifAtomicsmask |= BIF_PCIE_CPL_ATOMICS_CAS_128;
     }
+}
+
+/*!
+ * @brief  Get the NV_PMC_ENABLE bit of the valid Engines to reset.
+ *
+ * @param[in]  pGpu       The GPU object
+ * @param[in]  pKernelBif KernelBif object pointer
+ * 
+ * @return All valid engines in NV_PMC_ENABLE.
+ */
+NvU32
+kbifGetValidEnginesToReset_GB100
+(
+    OBJGPU    *pGpu,
+    KernelBif *pKernelBif
+)
+{
+    return (DRF_DEF(_PMC_ZB, _ENABLE, _PDISP,   _ENABLED) |
+            DRF_DEF(_PMC_ZB, _ENABLE, _PERFMON, _ENABLED));
 }

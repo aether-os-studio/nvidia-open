@@ -80,6 +80,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__OBJREFCNT =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_refcntDestruct(OBJREFCNT*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_OBJREFCNT(OBJREFCNT *pThis) {
     __nvoc_refcntDestruct(pThis);
@@ -139,16 +140,25 @@ void __nvoc_init__OBJREFCNT(OBJREFCNT *pThis) {
     __nvoc_init_funcTable_OBJREFCNT(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_OBJREFCNT(OBJREFCNT **ppThis, Dynamic *pParent, NvU32 createFlags, Dynamic * arg_pParent, NvU32 arg_tag, RefcntStateChangeCallback * arg_pStateChangeCallback, RefcntResetCallback * arg_pResetCallback)
+NV_STATUS __nvoc_objCreate_OBJREFCNT(OBJREFCNT **ppThis, Dynamic *pParent, NvU32 createFlags, Dynamic *arg_pParent, NvU32 arg_tag, RefcntStateChangeCallback *arg_pStateChangeCallback, RefcntResetCallback *arg_pResetCallback)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     OBJREFCNT *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(OBJREFCNT), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(OBJREFCNT));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(OBJREFCNT));
@@ -166,6 +176,7 @@ NV_STATUS __nvoc_objCreate_OBJREFCNT(OBJREFCNT **ppThis, Dynamic *pParent, NvU32
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__OBJREFCNT(pThis);
     status = __nvoc_ctor_OBJREFCNT(pThis, arg_pParent, arg_tag, arg_pStateChangeCallback, arg_pResetCallback);
     if (status != NV_OK) goto __nvoc_objCreate_OBJREFCNT_cleanup;
@@ -173,33 +184,37 @@ NV_STATUS __nvoc_objCreate_OBJREFCNT(OBJREFCNT **ppThis, Dynamic *pParent, NvU32
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_OBJREFCNT_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(OBJREFCNT));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_OBJREFCNT(OBJREFCNT **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    Dynamic * arg_pParent = va_arg(args, Dynamic *);
+    Dynamic *arg_pParent = va_arg(args, Dynamic *);
     NvU32 arg_tag = va_arg(args, NvU32);
-    RefcntStateChangeCallback * arg_pStateChangeCallback = va_arg(args, RefcntStateChangeCallback *);
-    RefcntResetCallback * arg_pResetCallback = va_arg(args, RefcntResetCallback *);
+    RefcntStateChangeCallback *arg_pStateChangeCallback = va_arg(args, RefcntStateChangeCallback *);
+    RefcntResetCallback *arg_pResetCallback = va_arg(args, RefcntResetCallback *);
 
     status = __nvoc_objCreate_OBJREFCNT(ppThis, pParent, createFlags, arg_pParent, arg_tag, arg_pStateChangeCallback, arg_pResetCallback);
 

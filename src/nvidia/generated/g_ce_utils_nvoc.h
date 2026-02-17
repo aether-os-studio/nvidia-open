@@ -44,6 +44,7 @@ extern "C" {
 #ifndef CE_UTILS_H
 #define CE_UTILS_H
 
+#include "core/core.h"
 #include "gpu/gpu_resource.h" // GpuResource
 #include "class/cl0050.h"
 #include "ctrl/ctrl0050.h"
@@ -58,6 +59,8 @@ typedef struct
     NvU32 pattern;
     NvU64 flags;
     NvU64 submittedWorkId;   // Payload to poll for async completion
+    ChannelCompletionCallback pCompletionCallback;
+    void *pCompletionCallbackArg;
 } CEUTILS_MEMSET_PARAMS;
 
 typedef struct
@@ -69,6 +72,8 @@ typedef struct
     NvU64 length;
     NvU64 flags;
     NvU64 submittedWorkId;   // Payload to poll for async completion
+    ChannelCompletionCallback pCompletionCallback;
+    void *pCompletionCallbackArg;
 
     NvBool bSecureCopy; // The copy encrypts/decrypts when copying to/from unprotected memory
     NvBool bEncrypt; // Toggle encrypt/decrypt
@@ -90,6 +95,15 @@ typedef struct KernelChannel KernelChannel;
 #endif /* __nvoc_class_id_KernelChannel */
 
 
+
+typedef struct
+{
+    ChannelCompletionCallback pCallback;
+    void *pArg;
+    NvU64 payload;
+    ListNode listNode;
+} CeUtilsCallback;
+MAKE_INTRUSIVE_LIST(CeUtilsCallbackList, CeUtilsCallback, listNode);
 
 
 // Private field names are wrapped in PRIVATE_FIELD, which does nothing for
@@ -133,6 +147,9 @@ struct CeUtils {
     NvU64 lastCompletedPayload;
     NvBool bForcedCeId;
     NvU64 submissionPausedRefCount;
+    NvBool bCompletionCallbackEnabled;
+    PORT_SPINLOCK *pCallbackLock;
+    CeUtilsCallbackList completionCallbacks;
     struct KernelChannel *pLiteKernelChannel;
 };
 
@@ -172,103 +189,97 @@ NV_STATUS __nvoc_objCreate_CeUtils(CeUtils**, Dynamic*, NvU32, struct OBJGPU *ar
     __nvoc_objCreate_CeUtils((ppNewObj), staticCast((pParent), Dynamic), (createFlags), arg_pGpu, arg_pKernelMIGGPUInstance, arg_pAllocParams)
 
 
-// Wrapper macros
-
-// Dispatch functions
-static inline NvBool ceutilsIsSubmissionPaused(struct CeUtils *pCeUtils) {
-    return pCeUtils->submissionPausedRefCount != 0;
-}
-
+// Wrapper macros for implementation functions
 NV_STATUS ceutilsConstruct_IMPL(struct CeUtils *arg_pCeUtils, struct OBJGPU *arg_pGpu, KERNEL_MIG_GPU_INSTANCE *arg_pKernelMIGGPUInstance, NV0050_ALLOCATION_PARAMETERS *arg_pAllocParams);
-
 #define __nvoc_ceutilsConstruct(arg_pCeUtils, arg_pGpu, arg_pKernelMIGGPUInstance, arg_pAllocParams) ceutilsConstruct_IMPL(arg_pCeUtils, arg_pGpu, arg_pKernelMIGGPUInstance, arg_pAllocParams)
+
 void ceutilsDestruct_IMPL(struct CeUtils *pCeUtils);
-
 #define __nvoc_ceutilsDestruct(pCeUtils) ceutilsDestruct_IMPL(pCeUtils)
-NV_STATUS ceutilsMemset_IMPL(struct CeUtils *pCeUtils, CEUTILS_MEMSET_PARAMS *pParams);
 
+NV_STATUS ceutilsMemset_IMPL(struct CeUtils *pCeUtils, CEUTILS_MEMSET_PARAMS *pParams);
 #ifdef __nvoc_ce_utils_h_disabled
 static inline NV_STATUS ceutilsMemset(struct CeUtils *pCeUtils, CEUTILS_MEMSET_PARAMS *pParams) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
     return NV_ERR_NOT_SUPPORTED;
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsMemset(pCeUtils, pParams) ceutilsMemset_IMPL(pCeUtils, pParams)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 NV_STATUS ceutilsMemcopy_IMPL(struct CeUtils *pCeUtils, CEUTILS_MEMCOPY_PARAMS *pParams);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline NV_STATUS ceutilsMemcopy(struct CeUtils *pCeUtils, CEUTILS_MEMCOPY_PARAMS *pParams) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
     return NV_ERR_NOT_SUPPORTED;
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsMemcopy(pCeUtils, pParams) ceutilsMemcopy_IMPL(pCeUtils, pParams)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 NV_STATUS ceutilsGetFirstAsyncCe_IMPL(struct CeUtils *pCeUtils, struct OBJGPU *pGpu, struct RsClient *pClient, NvHandle hDevice, NvU32 *pCeInstance, NvBool forceSkipMIG);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline NV_STATUS ceutilsGetFirstAsyncCe(struct CeUtils *pCeUtils, struct OBJGPU *pGpu, struct RsClient *pClient, NvHandle hDevice, NvU32 *pCeInstance, NvBool forceSkipMIG) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
     return NV_ERR_NOT_SUPPORTED;
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsGetFirstAsyncCe(pCeUtils, pGpu, pClient, hDevice, pCeInstance, forceSkipMIG) ceutilsGetFirstAsyncCe_IMPL(pCeUtils, pGpu, pClient, hDevice, pCeInstance, forceSkipMIG)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 NvU64 ceutilsUpdateProgress_IMPL(struct CeUtils *pCeUtils);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline NvU64 ceutilsUpdateProgress(struct CeUtils *pCeUtils) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
     return 0;
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsUpdateProgress(pCeUtils) ceutilsUpdateProgress_IMPL(pCeUtils)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 void ceutilsServiceInterrupts_IMPL(struct CeUtils *pCeUtils);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline void ceutilsServiceInterrupts(struct CeUtils *pCeUtils) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsServiceInterrupts(pCeUtils) ceutilsServiceInterrupts_IMPL(pCeUtils)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 void ceutilsPauseSubmission_IMPL(struct CeUtils *pCeUtils, NvBool bWaitForWorkCompletion);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline void ceutilsPauseSubmission(struct CeUtils *pCeUtils, NvBool bWaitForWorkCompletion) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsPauseSubmission(pCeUtils, bWaitForWorkCompletion) ceutilsPauseSubmission_IMPL(pCeUtils, bWaitForWorkCompletion)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 void ceutilsResumeSubmission_IMPL(struct CeUtils *pCeUtils);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline void ceutilsResumeSubmission(struct CeUtils *pCeUtils) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsResumeSubmission(pCeUtils) ceutilsResumeSubmission_IMPL(pCeUtils)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
 
 NvBool ceutilsUsesPreferredCe_IMPL(struct CeUtils *pCeUtils);
-
 #ifdef __nvoc_ce_utils_h_disabled
 static inline NvBool ceutilsUsesPreferredCe(struct CeUtils *pCeUtils) {
     NV_ASSERT_FAILED_PRECOMP("CeUtils was disabled!");
     return NV_FALSE;
 }
-#else //__nvoc_ce_utils_h_disabled
+#else // __nvoc_ce_utils_h_disabled
 #define ceutilsUsesPreferredCe(pCeUtils) ceutilsUsesPreferredCe_IMPL(pCeUtils)
-#endif //__nvoc_ce_utils_h_disabled
+#endif // __nvoc_ce_utils_h_disabled
+
+
+// Wrapper macros for halified functions
+
+// Dispatch functions
+static inline NvBool ceutilsIsSubmissionPaused(struct CeUtils *pCeUtils) {
+    return pCeUtils->submissionPausedRefCount != 0;
+}
 
 #undef PRIVATE_FIELD
 
@@ -309,11 +320,6 @@ struct CeUtilsApi {
     struct RmResource *__nvoc_pbase_RmResource;    // rmres super^2
     struct GpuResource *__nvoc_pbase_GpuResource;    // gpures super
     struct CeUtilsApi *__nvoc_pbase_CeUtilsApi;    // ceutilsapi
-
-    // Vtable with 3 per-object function pointers
-    NV_STATUS (*__ceutilsapiCtrlCmdMemset__)(struct CeUtilsApi * /*this*/, NV0050_CTRL_MEMSET_PARAMS *);  // exported (id=0x500101)
-    NV_STATUS (*__ceutilsapiCtrlCmdMemcopy__)(struct CeUtilsApi * /*this*/, NV0050_CTRL_MEMCOPY_PARAMS *);  // exported (id=0x500102)
-    NV_STATUS (*__ceutilsapiCtrlCmdCheckProgress__)(struct CeUtilsApi * /*this*/, NV0050_CTRL_CHECK_PROGRESS_PARAMS *);  // exported (id=0x500103)
 
     // Data members
     struct CeUtils *pCeUtils;
@@ -385,13 +391,45 @@ NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi**, Dynamic*, NvU32, CALL_CONTEX
     __nvoc_objCreate_CeUtilsApi((ppNewObj), staticCast((pParent), Dynamic), (createFlags), arg_pCallContext, arg_pParams)
 
 
-// Wrapper macros
-#define ceutilsapiCtrlCmdMemset_FNPTR(pCeUtilsApi) pCeUtilsApi->__ceutilsapiCtrlCmdMemset__
-#define ceutilsapiCtrlCmdMemset(pCeUtilsApi, pParams) ceutilsapiCtrlCmdMemset_DISPATCH(pCeUtilsApi, pParams)
-#define ceutilsapiCtrlCmdMemcopy_FNPTR(pCeUtilsApi) pCeUtilsApi->__ceutilsapiCtrlCmdMemcopy__
-#define ceutilsapiCtrlCmdMemcopy(pCeUtilsApi, pParams) ceutilsapiCtrlCmdMemcopy_DISPATCH(pCeUtilsApi, pParams)
-#define ceutilsapiCtrlCmdCheckProgress_FNPTR(pCeUtilsApi) pCeUtilsApi->__ceutilsapiCtrlCmdCheckProgress__
-#define ceutilsapiCtrlCmdCheckProgress(pCeUtilsApi, pParams) ceutilsapiCtrlCmdCheckProgress_DISPATCH(pCeUtilsApi, pParams)
+// Wrapper macros for implementation functions
+NV_STATUS ceutilsapiConstruct_IMPL(struct CeUtilsApi *arg_pCeUtilsApi, CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams);
+#define __nvoc_ceutilsapiConstruct(arg_pCeUtilsApi, arg_pCallContext, arg_pParams) ceutilsapiConstruct_IMPL(arg_pCeUtilsApi, arg_pCallContext, arg_pParams)
+
+void ceutilsapiDestruct_IMPL(struct CeUtilsApi *pCeUtilsApi);
+#define __nvoc_ceutilsapiDestruct(pCeUtilsApi) ceutilsapiDestruct_IMPL(pCeUtilsApi)
+
+NV_STATUS ceutilsapiCtrlCmdMemset_IMPL(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMSET_PARAMS *pParams);
+#ifdef __nvoc_ce_utils_h_disabled
+static inline NV_STATUS ceutilsapiCtrlCmdMemset(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMSET_PARAMS *pParams) {
+    NV_ASSERT_FAILED_PRECOMP("CeUtilsApi was disabled!");
+    return NV_ERR_NOT_SUPPORTED;
+}
+#else // __nvoc_ce_utils_h_disabled
+#define ceutilsapiCtrlCmdMemset(pCeUtilsApi, pParams) ceutilsapiCtrlCmdMemset_IMPL(pCeUtilsApi, pParams)
+#endif // __nvoc_ce_utils_h_disabled
+
+NV_STATUS ceutilsapiCtrlCmdMemcopy_IMPL(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMCOPY_PARAMS *pParams);
+#ifdef __nvoc_ce_utils_h_disabled
+static inline NV_STATUS ceutilsapiCtrlCmdMemcopy(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMCOPY_PARAMS *pParams) {
+    NV_ASSERT_FAILED_PRECOMP("CeUtilsApi was disabled!");
+    return NV_ERR_NOT_SUPPORTED;
+}
+#else // __nvoc_ce_utils_h_disabled
+#define ceutilsapiCtrlCmdMemcopy(pCeUtilsApi, pParams) ceutilsapiCtrlCmdMemcopy_IMPL(pCeUtilsApi, pParams)
+#endif // __nvoc_ce_utils_h_disabled
+
+NV_STATUS ceutilsapiCtrlCmdCheckProgress_IMPL(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_CHECK_PROGRESS_PARAMS *pParams);
+#ifdef __nvoc_ce_utils_h_disabled
+static inline NV_STATUS ceutilsapiCtrlCmdCheckProgress(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_CHECK_PROGRESS_PARAMS *pParams) {
+    NV_ASSERT_FAILED_PRECOMP("CeUtilsApi was disabled!");
+    return NV_ERR_NOT_SUPPORTED;
+}
+#else // __nvoc_ce_utils_h_disabled
+#define ceutilsapiCtrlCmdCheckProgress(pCeUtilsApi, pParams) ceutilsapiCtrlCmdCheckProgress_IMPL(pCeUtilsApi, pParams)
+#endif // __nvoc_ce_utils_h_disabled
+
+
+// Wrapper macros for halified functions
 #define ceutilsapiControl_FNPTR(pGpuResource) pGpuResource->__nvoc_base_GpuResource.__nvoc_metadata_ptr->vtable.__gpuresControl__
 #define ceutilsapiControl(pGpuResource, pCallContext, pParams) ceutilsapiControl_DISPATCH(pGpuResource, pCallContext, pParams)
 #define ceutilsapiMap_FNPTR(pGpuResource) pGpuResource->__nvoc_base_GpuResource.__nvoc_metadata_ptr->vtable.__gpuresMap__
@@ -444,18 +482,6 @@ NV_STATUS __nvoc_objCreate_CeUtilsApi(CeUtilsApi**, Dynamic*, NvU32, CALL_CONTEX
 #define ceutilsapiAddAdditionalDependants(pClient, pResource, pReference) ceutilsapiAddAdditionalDependants_DISPATCH(pClient, pResource, pReference)
 
 // Dispatch functions
-static inline NV_STATUS ceutilsapiCtrlCmdMemset_DISPATCH(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMSET_PARAMS *pParams) {
-    return pCeUtilsApi->__ceutilsapiCtrlCmdMemset__(pCeUtilsApi, pParams);
-}
-
-static inline NV_STATUS ceutilsapiCtrlCmdMemcopy_DISPATCH(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_MEMCOPY_PARAMS *pParams) {
-    return pCeUtilsApi->__ceutilsapiCtrlCmdMemcopy__(pCeUtilsApi, pParams);
-}
-
-static inline NV_STATUS ceutilsapiCtrlCmdCheckProgress_DISPATCH(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_CHECK_PROGRESS_PARAMS *pParams) {
-    return pCeUtilsApi->__ceutilsapiCtrlCmdCheckProgress__(pCeUtilsApi, pParams);
-}
-
 static inline NV_STATUS ceutilsapiControl_DISPATCH(struct CeUtilsApi *pGpuResource, struct CALL_CONTEXT *pCallContext, struct RS_RES_CONTROL_PARAMS_INTERNAL *pParams) {
     return pGpuResource->__nvoc_metadata_ptr->vtable.__ceutilsapiControl__(pGpuResource, pCallContext, pParams);
 }
@@ -562,12 +588,6 @@ NV_STATUS ceutilsapiCtrlCmdMemcopy_IMPL(struct CeUtilsApi *pCeUtilsApi, NV0050_C
 
 NV_STATUS ceutilsapiCtrlCmdCheckProgress_IMPL(struct CeUtilsApi *pCeUtilsApi, NV0050_CTRL_CHECK_PROGRESS_PARAMS *pParams);
 
-NV_STATUS ceutilsapiConstruct_IMPL(struct CeUtilsApi *arg_pCeUtilsApi, CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams);
-
-#define __nvoc_ceutilsapiConstruct(arg_pCeUtilsApi, arg_pCallContext, arg_pParams) ceutilsapiConstruct_IMPL(arg_pCeUtilsApi, arg_pCallContext, arg_pParams)
-void ceutilsapiDestruct_IMPL(struct CeUtilsApi *pCeUtilsApi);
-
-#define __nvoc_ceutilsapiDestruct(pCeUtilsApi) ceutilsapiDestruct_IMPL(pCeUtilsApi)
 #undef PRIVATE_FIELD
 
 

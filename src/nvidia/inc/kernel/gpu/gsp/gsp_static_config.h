@@ -40,7 +40,6 @@
 #include "platform/chipset/chipset.h" // BUSINFO
 #include "gpu/nvbitmask.h" // NVGPU_ENGINE_CAPS_MASK_ARRAY_MAX
 
-
 // VF related info for GSP-RM
 typedef struct GSP_VF_INFO
 {
@@ -81,6 +80,9 @@ typedef struct GspStaticConfigInfo_t
     NV2080_CTRL_GPU_GET_GID_INFO_PARAMS gidInfo;
     NV2080_CTRL_BIOS_GET_SKU_INFO_PARAMS SKUInfo;
     NV2080_CTRL_CMD_FB_GET_FB_REGION_INFO_PARAMS fbRegionInfoParams;
+
+    NvBool bPdiValid;
+    NvU64 pdi;
 
     NV0080_CTRL_GPU_GET_SRIOV_CAPS_PARAMS sriovCaps;
     NvU32 sriovMaxGfid;
@@ -164,6 +166,8 @@ typedef struct GspStaticConfigInfo_t
     EcidManufacturingInfo ecidInfo[MAX_GROUP_COUNT];
 
     FW_WPR_LAYOUT_OFFSET fwWprLayoutOffset;
+
+    NvBool bSystemRebootRequired;
 } GspStaticConfigInfo;
 
 // Pushed from CPU-RM to GSP-RM
@@ -203,10 +207,12 @@ typedef struct GspSystemInfo
     BUSINFO chipsetIDInfo;
     ACPI_METHOD_DATA acpiMethodData;
     NvU32 hypervisorType;
+    NvU16 virtualConfigBits;
     NvBool bIsPassthru;
     NvU64 sysTimerOffsetNs;
     GSP_VF_INFO gspVFInfo;
     NvBool bIsPrimary;
+    NvBool bIsUnixHdmiFrlComplianceEnabled;
     NvBool isGridBuild;
     GSP_PCIE_CONFIG_REG pcieConfigReg;
     NvU32 gridBuildCsp;
@@ -217,6 +223,11 @@ typedef struct GspSystemInfo
     NvBool bClockBoostSupported;
     NvU64  hostPageSize;
     NvBool bIsCmcBasedHws;
+    NvBool bGspNocatEnabled;
+    NvBool bS0ixSupport;
+    NvBool bWindowChannelAlwaysMapped;
+    NvU32  pciePowerControlValue;
+    NvBool bPciePowerControlPresent;
 } GspSystemInfo;
 
 

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -32,7 +32,6 @@
 #include "platform/sli/sli.h"
 
 #include "kernel/gpu/intr/engine_idx.h"
-#include "kernel/gpu/intr/intr.h"
 
 #include "ctrl/ctrl906f.h"
 
@@ -70,7 +69,8 @@ _krcThwapChannel
         return;
     }
 
-    NV_PRINTF(LEVEL_INFO, "Thwapping channel 0x%02x.\n",
+    NV_PRINTF(LEVEL_INFO,
+              "Thwapping channel " FMT_CHANNEL_DEBUG_TAG ".\n",
               kchannelGetDebugTag(pKernelChannel));
 
 
@@ -138,18 +138,24 @@ void krcWatchdogTimerProc
     void   *data
 )
 {
-    //
-    // These calls shouldn't occur during a hibernate/standby enter or resume
-    // sequence or if the GPU is lost, which will cause a system hang.
-    //
-    if (gpuIsGpuFullPower(pGpu) &&
-        !pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_LOST))
+    KernelWatchdog *pKernelWatchdog = (KernelWatchdog *)data;
+    
+    // TODO: (Bug 4154640) Below functions are not ready to support KernelWatchdog, so bail out if pKernelWatchdog is not NULL
+    if (pKernelWatchdog == NULL)
     {
-        KernelRc *pKernelRc = GPU_GET_KERNEL_RC(pGpu);
+        //
+        // These calls shouldn't occur during a hibernate/standby enter or resume
+        // sequence or if the GPU is lost, which will cause a system hang.
+        //
+        if (gpuIsGpuFullPower(pGpu) &&
+            !pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_LOST))
+        {
+            KernelRc *pKernelRc = GPU_GET_KERNEL_RC(pGpu);
 
-        krcWatchdog_HAL(pGpu, pKernelRc);
-        krcWatchdogCallbackVblankRecovery(pGpu, pKernelRc);
-        krcWatchdogCallbackPerf_HAL(pGpu, pKernelRc);
+            krcWatchdog_HAL(pGpu, pKernelRc);
+            krcWatchdogCallbackVblankRecovery(pGpu, pKernelRc);
+            krcWatchdogCallbackPerf_HAL(pGpu, pKernelRc);
+        }
     }
 }
 
@@ -198,7 +204,7 @@ krcWatchdog_IMPL
         //
         if (!(pKernelRc->watchdog.flags & WATCHDOG_FLAGS_INITIALIZED))
         {
-            rmStatus = krcWatchdogInit_HAL(pGpu, pKernelRc);
+            rmStatus = krcWatchdogInit_HAL(pGpu, pKernelRc, NULL);
 
             if (rmStatus!= NV_OK)
             {
@@ -220,7 +226,7 @@ krcWatchdog_IMPL
             pKernelRc->watchdog.errorContext->status = 0;
 
             // reinit the pushbuffer image and kickoff again
-            krcWatchdogInitPushbuffer_HAL(pGpu, pKernelRc);
+            krcWatchdogInitPushbuffer_HAL(pGpu, pKernelRc, NULL);
 
             // Run Immediately
             pKernelRc->watchdogPersistent.nextRunTime = 0;
@@ -242,7 +248,7 @@ krcWatchdog_IMPL
             }
         }
 
-        osGetCurrentTime(&sec, &usec);
+        osGetSystemTime(&sec, &usec);
         currentTime = (((NvU64)sec) * 1000000) + usec;
 
         //
@@ -337,7 +343,7 @@ krcWatchdog_IMPL
             SLI_LOOP_END;
 
             // Set the put pointer on our buffer.
-            krcWatchdogWriteNotifierToGpfifo(pGpu, pKernelRc);
+            krcWatchdogWriteNotifierToGpfifo(pGpu, pKernelRc, NULL);
         }
     }
 }
@@ -372,7 +378,6 @@ void krcWatchdogCallbackVblankRecovery_IMPL
 {
     NvU32           head;
     KernelDisplay  *pKernelDisplay = GPU_GET_KERNEL_DISPLAY(pGpu);
-    Intr           *pIntr = GPU_GET_INTR(pGpu);
     MC_ENGINE_BITVECTOR intrDispPending;
 
     if (!pKernelRc->bRobustChannelsEnabled ||
@@ -383,10 +388,19 @@ void krcWatchdogCallbackVblankRecovery_IMPL
     }
 
     //
-    // Determine the interrupt type for kdispServiceLowLatencyIntrs_HAL
-    // to know what interrupt type it is
+    // The pending intr would have been cleared from the HW by now
+    // if there is a deferred vblank. We don't need a retrigger for
+    // MC_ENGINE_IDX_DISP since that is handled in a separate function
+    // and doesn't need a clear if a vblank is pending.
+    // We do need a retrigger if we have a separate interrupt vector,
+    // so do one if we have it.
     //
-    intrGetPendingLowLatencyHwDisplayIntr_HAL(pGpu, pIntr, &intrDispPending, NULL);
+    bitVectorClrAll(&intrDispPending);
+
+    if (pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE))
+    {
+        bitVectorSet(&intrDispPending, MC_ENGINE_IDX_DISP_LOW);
+    }
 
     for (head = 0; head < kdispGetNumHeads(pKernelDisplay); head++)
     {

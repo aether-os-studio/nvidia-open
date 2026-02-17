@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1999-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1999-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -195,7 +195,8 @@ static NvU32 RmRunSLISupportCheck
     OBJSYS    *pSys                 = SYS_GET_INSTANCE();
 
 
-    if (IS_VIRTUAL(pGpu) || IS_GSP_CLIENT(pGpu))
+    if (IS_VIRTUAL(pGpu) || IS_GSP_CLIENT(pGpu) ||
+        pGpu->getProperty(pGpu, PDB_PROP_GPU_TEGRA_SOC_NVDISPLAY))
     {
         gpuSliStatus |= NV0000_CTRL_SLI_STATUS_GPU_NOT_SUPPORTED;
 
@@ -222,7 +223,9 @@ static NvU32 RmRunSLISupportCheck
          ((pKernelNvlink != NULL) &&
           ((GPU_IS_NVSWITCH_DETECTED(pGpu)) ||
            knvlinkIsNvswitchProxyPresent(pGpu, pKernelNvlink)))) &&
-        pSys->getProperty(pSys, PDB_PROP_SYS_FABRIC_IS_EXTERNALLY_MANAGED))
+        pSys->getProperty(pSys, PDB_PROP_SYS_FABRIC_IS_EXTERNALLY_MANAGED) && 
+        ((pKernelNvlink == NULL) ||
+         !pKernelNvlink->getProperty(pKernelNvlink, PDB_PROP_KNVLINK_NVSWITCH_SUPPORTS_SLI)))
     {
         gpuSliStatus |= NV0000_CTRL_SLI_STATUS_GPU_NOT_SUPPORTED;
         goto fail;

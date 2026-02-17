@@ -95,9 +95,6 @@ typedef struct _nv_push_hal {
          * entries */
         NvU32 allocateDoubleSizeGpFifo                  :1;
 
-        /* Use Volta+ semaphore methods */
-        NvU32 voltaSemMethods                           :1;
-
         NvU32 extendedBase                              :1;
     } caps;
 } NvPushHal;
@@ -106,7 +103,6 @@ typedef struct _NvPushDeviceRec {
 
     void           *hostDevice;     /* Provided by the host driver */
 
-    NvBool          hostLBoverflowBug1667921 : 1;
     NvBool          clientSli : 1;   /* Provided by the host driver */
     NvBool          hasFb : 1;       /* Computed from supportedClasses[] */
 

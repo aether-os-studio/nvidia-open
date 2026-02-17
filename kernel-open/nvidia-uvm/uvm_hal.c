@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2015-2024 NVIDIA Corporation
+    Copyright (c) 2015-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -154,6 +154,7 @@ static uvm_hal_class_ops_t ce_table[] =
         .id = HOPPER_DMA_COPY_A,
         .parent_id = AMPERE_DMA_COPY_B,
         .u.ce_ops = {
+            .phys_mode = uvm_hal_hopper_ce_phys_mode,
             .semaphore_release = uvm_hal_hopper_ce_semaphore_release,
             .semaphore_timestamp = uvm_hal_hopper_ce_semaphore_timestamp,
             .semaphore_reduction_inc = uvm_hal_hopper_ce_semaphore_reduction_inc,
@@ -172,7 +173,9 @@ static uvm_hal_class_ops_t ce_table[] =
     {
         .id = BLACKWELL_DMA_COPY_A,
         .parent_id = HOPPER_DMA_COPY_A,
-        .u.ce_ops = {},
+        .u.ce_ops = {
+            .memcopy_is_valid = uvm_hal_blackwell_ce_memcopy_is_valid,
+        },
     },
     {
         .id = BLACKWELL_DMA_COPY_B,
@@ -208,7 +211,9 @@ static uvm_hal_class_ops_t host_table[] =
             .write_gpu_put = uvm_hal_maxwell_host_write_gpu_put,
             .tlb_invalidate_all = uvm_hal_maxwell_host_tlb_invalidate_all_a16f,
             .tlb_invalidate_va = uvm_hal_maxwell_host_tlb_invalidate_va,
+            .tlb_invalidate_phys = uvm_hal_maxwell_host_tlb_invalidate_phys_unsupported,
             .tlb_invalidate_test = uvm_hal_maxwell_host_tlb_invalidate_test,
+            .tlb_flush_prefetch = uvm_hal_maxwell_host_tlb_flush_prefetch_unsupported,
             .replay_faults = uvm_hal_maxwell_replay_faults_unsupported,
             .cancel_faults_global = uvm_hal_maxwell_cancel_faults_global_unsupported,
             .cancel_faults_targeted = uvm_hal_maxwell_cancel_faults_targeted_unsupported,
@@ -218,6 +223,8 @@ static uvm_hal_class_ops_t host_table[] =
             .clear_faulted_channel_register = uvm_hal_maxwell_host_clear_faulted_channel_register_unsupported,
             .access_counter_clear_all = uvm_hal_maxwell_access_counter_clear_all_unsupported,
             .access_counter_clear_targeted = uvm_hal_maxwell_access_counter_clear_targeted_unsupported,
+            .access_counter_query_clear_op = uvm_hal_maxwell_access_counter_query_clear_op_unsupported,
+            .l2_invalidate = uvm_hal_host_l2_invalidate_unsupported,
             .get_time = uvm_hal_maxwell_get_time,
         }
     },
@@ -269,6 +276,7 @@ static uvm_hal_class_ops_t host_table[] =
             .tlb_invalidate_test = uvm_hal_turing_host_tlb_invalidate_test,
             .access_counter_clear_all = uvm_hal_turing_access_counter_clear_all,
             .access_counter_clear_targeted = uvm_hal_turing_access_counter_clear_targeted,
+            .access_counter_query_clear_op = uvm_hal_turing_access_counter_query_clear_op,
         }
     },
     {
@@ -282,6 +290,7 @@ static uvm_hal_class_ops_t host_table[] =
             .tlb_invalidate_all = uvm_hal_ampere_host_tlb_invalidate_all,
             .tlb_invalidate_va = uvm_hal_ampere_host_tlb_invalidate_va,
             .tlb_invalidate_test = uvm_hal_ampere_host_tlb_invalidate_test,
+            .l2_invalidate = uvm_hal_ampere_host_l2_invalidate,
         }
     },
     {
@@ -307,13 +316,19 @@ static uvm_hal_class_ops_t host_table[] =
         .u.host_ops = {
             .tlb_invalidate_all = uvm_hal_blackwell_host_tlb_invalidate_all,
             .tlb_invalidate_va = uvm_hal_blackwell_host_tlb_invalidate_va,
+            .tlb_invalidate_phys = uvm_hal_blackwell_host_tlb_invalidate_phys,
             .tlb_invalidate_test = uvm_hal_blackwell_host_tlb_invalidate_test,
+            .tlb_flush_prefetch = uvm_hal_blackwell_host_tlb_flush_prefetch,
+            .access_counter_query_clear_op = uvm_hal_blackwell_access_counter_query_clear_op_gb100,
+            .l2_invalidate = uvm_hal_blackwell_host_l2_invalidate,
         }
     },
     {
         .id = BLACKWELL_CHANNEL_GPFIFO_B,
         .parent_id = BLACKWELL_CHANNEL_GPFIFO_A,
-        .u.host_ops = {}
+        .u.host_ops = {
+            .access_counter_query_clear_op = uvm_hal_blackwell_access_counter_query_clear_op_gb20x
+        }
     },
 };
 
@@ -900,12 +915,6 @@ static void hal_override_properties(uvm_parent_gpu_t *parent_gpu)
     // TODO: Bug 200692962: Add support for access counters in vGPU
     if ((parent_gpu->virt_mode != UVM_VIRT_MODE_NONE) || g_uvm_global.conf_computing_enabled)
         parent_gpu->access_counters_supported = false;
-
-
-    // TODO: Bug 4637114: [UVM] Remove support for physical access counter
-    // notifications. Always set to false, until we remove the PMM reverse
-    // mapping code.
-    parent_gpu->access_counters_can_use_physical_addresses = false;
 }
 
 void uvm_hal_init_properties(uvm_parent_gpu_t *parent_gpu)
@@ -972,9 +981,28 @@ uvm_membar_t uvm_hal_downgrade_membar_type(uvm_gpu_t *gpu, bool is_local_vidmem)
     return UVM_MEMBAR_SYS;
 }
 
+void uvm_hal_tlb_invalidate_phys(uvm_push_t *push, uvm_dma_map_invalidation_t inval_type)
+{
+    uvm_parent_gpu_t *parent = uvm_push_get_gpu(push)->parent;
+
+    switch (inval_type) {
+        case UVM_DMA_MAP_INVALIDATION_FLUSH:
+            parent->host_hal->tlb_flush_prefetch(push);
+            break;
+
+        case UVM_DMA_MAP_INVALIDATION_FULL:
+            parent->host_hal->tlb_invalidate_phys(push);
+            break;
+
+        default:
+            UVM_ASSERT(inval_type == UVM_DMA_MAP_INVALIDATION_NONE);
+            break;
+    }
+}
+
 const char *uvm_aperture_string(uvm_aperture_t aperture)
 {
-    BUILD_BUG_ON(UVM_APERTURE_MAX != 12);
+    BUILD_BUG_ON(UVM_APERTURE_MAX != 13);
 
     switch (aperture) {
         UVM_ENUM_STRING_CASE(UVM_APERTURE_PEER_0);
@@ -987,6 +1015,7 @@ const char *uvm_aperture_string(uvm_aperture_t aperture)
         UVM_ENUM_STRING_CASE(UVM_APERTURE_PEER_7);
         UVM_ENUM_STRING_CASE(UVM_APERTURE_PEER_MAX);
         UVM_ENUM_STRING_CASE(UVM_APERTURE_SYS);
+        UVM_ENUM_STRING_CASE(UVM_APERTURE_SYS_NON_COHERENT);
         UVM_ENUM_STRING_CASE(UVM_APERTURE_VID);
         UVM_ENUM_STRING_CASE(UVM_APERTURE_DEFAULT);
         UVM_ENUM_STRING_DEFAULT();
@@ -1116,6 +1145,18 @@ void uvm_hal_print_access_counter_buffer_entry(const uvm_access_counter_buffer_e
     UVM_DBG_PRINT("    tag             %x\n", entry->tag);
 }
 
+const char *uvm_dma_map_invalidation_string(uvm_dma_map_invalidation_t inval_type)
+{
+    BUILD_BUG_ON(UVM_DMA_MAP_INVALIDATION_COUNT != 3);
+
+    switch (inval_type) {
+        UVM_ENUM_STRING_CASE(UVM_DMA_MAP_INVALIDATION_NONE);
+        UVM_ENUM_STRING_CASE(UVM_DMA_MAP_INVALIDATION_FLUSH);
+        UVM_ENUM_STRING_CASE(UVM_DMA_MAP_INVALIDATION_FULL);
+        UVM_ENUM_STRING_DEFAULT();
+    }
+}
+
 bool uvm_hal_method_is_valid_stub(uvm_push_t *push, NvU32 method_address, NvU32 method_data)
 {
     return true;
@@ -1123,4 +1164,11 @@ bool uvm_hal_method_is_valid_stub(uvm_push_t *push, NvU32 method_address, NvU32 
 
 void uvm_hal_ce_memcopy_patch_src_stub(uvm_push_t *push, uvm_gpu_address_t *src)
 {
+}
+
+void uvm_hal_host_l2_invalidate_unsupported(uvm_push_t *push, uvm_aperture_t aperture)
+{
+    uvm_gpu_t *gpu = uvm_push_get_gpu(push);
+    UVM_ASSERT_MSG(false, "L2 invalidate is not supported on %s",
+                   uvm_parent_gpu_name(gpu->parent));
 }

@@ -51,7 +51,6 @@
 #include "class/clc361.h" // VOLTA_USERMODE_A
 #include "class/clc661.h" // HOPPER_USERMODE_A
 
-#include "ctrl/ctrl0080/ctrl0080fifo.h" // NV0080_CTRL_CMD_FIFO_GET_CAPS_V2
 #include "ctrl/ctrl2080/ctrl2080bus.h" // NV2080_CTRL_CMD_BUS_GET_INFO
 #include "ctrl/ctrla06f/ctrla06fgpfifo.h" // KEPLER_CHANNEL_GPFIFO_A
 #include "ctrl/ctrlc36f.h" // VOLTA_CHANNEL_GPFIFO_A
@@ -1038,35 +1037,6 @@ fail:
     return FALSE;
 }
 
-static void CheckCaps(NvPushDevicePtr pDevice)
-{
-    int deviceIndex;
-
-    pDevice->hostLBoverflowBug1667921 = FALSE;
-
-    for (deviceIndex = 0;
-         deviceIndex < __nvPushGetNumDevices(pDevice);
-         deviceIndex++) {
-        NV0080_CTRL_FIFO_GET_CAPS_V2_PARAMS fifoCapsParams = { 0 };
-        NvU32 ret;
-
-        ret = nvPushImportRmApiControl(pDevice,
-                                   pDevice->subDevice[deviceIndex].deviceHandle,
-                                   NV0080_CTRL_CMD_FIFO_GET_CAPS_V2,
-                                   &fifoCapsParams,
-                                   sizeof(fifoCapsParams));
-        if (ret != NVOS_STATUS_SUCCESS) {
-            nvAssert(!"Failed to determine chip fifo capabilities");
-            return;
-        }
-
-        pDevice->hostLBoverflowBug1667921 |=
-            !!NV0080_CTRL_FIFO_GET_CAP(fifoCapsParams.capsTbl,
-              NV0080_CTRL_FIFO_CAPS_HAS_HOST_LB_OVERFLOW_BUG_1667921);
-    }
-}
-
-
 static void FreeNotifiers(
     NvPushChannelPtr pChannel)
 {
@@ -1530,15 +1500,13 @@ NvBool nvPushAllocDevice(
         pDevice->subDevice[sd].handle = pParams->subDevice[sd].handle;
         pDevice->subDevice[sd].deviceHandle = pParams->subDevice[sd].deviceHandle;
         pDevice->subDevice[sd].gpuVASpaceObject = pParams->subDevice[sd].gpuVASpaceObject;
-        pDevice->subDevice[sd].gpuVASpaceCtxDma = pParams->subDevice[sd].gpuVASpace;
+        pDevice->subDevice[sd].gpuVASpaceCtxDma = pParams->subDevice[sd].gpuVASpaceCtxDma;
     }
 
     if (pParams->amodel.config != NV_AMODEL_NONE) {
         nvAssert(!"Ignoring AModel configuration on non-XAMODEL build");
     }
     pDevice->amodelConfig = pParams->amodel.config;
-
-    CheckCaps(pDevice);
 
     if (!GetChannelClassAndUserDSize(pDevice, pParams)) {
         nvPushImportLogError(pDevice,

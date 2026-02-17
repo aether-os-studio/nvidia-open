@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -28,11 +28,13 @@
 #include "os/os.h"
 #include "kernel/gpu/mmu/kern_gmmu.h"
 #include "kernel/gpu/nvlink/kernel_ioctrl.h"
+#include "kernel/gpu/nvlink/common_nvlink.h"
 #include "core/thread_state.h"
 #include "platform/sli/sli.h"
 
 #include "gpu/gpu.h"
 #include "gpu/mem_mgr/mem_mgr.h"
+#include "swref/common_def_nvlink.h"
 
 #if defined(INCLUDE_NVLINK_LIB)
 static NV_STATUS _knvlinkAreLinksDisconnected(OBJGPU *, KernelNvlink *, NvBool *);
@@ -234,14 +236,14 @@ knvlinkApplyNvswitchDegradedModeSettings_GV100
 
     portMemSet(bLinkDisconnected, 0, sizeof(NvBool) * pKernelNvlink->maxSupportedLinks);
     // At least there should be one connection to NVSwitch, else bail out
-    FOR_EACH_INDEX_IN_MASK(64, linkId, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 64))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, linkId)
     {
         if (pKernelNvlink->nvlinkLinks[linkId].remoteEndInfo.deviceType == NVLINK_DEVICE_TYPE_NVSWITCH)
         {
             switchLinks |= NVBIT64(linkId);
         }
     }
-    FOR_EACH_INDEX_IN_MASK_END;
+    FOR_EACH_IN_BITVECTOR_END();
 
     if (switchLinks == 0)
     {
@@ -260,7 +262,7 @@ knvlinkApplyNvswitchDegradedModeSettings_GV100
         _knvlinkAreLinksDisconnected(pGpu, pKernelNvlink, bLinkDisconnected),
         cleanup);
 
-    FOR_EACH_INDEX_IN_MASK(64, linkId, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 64))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, linkId)
     {
         bUpdateConnStatus = NV_FALSE;
 
@@ -301,7 +303,7 @@ knvlinkApplyNvswitchDegradedModeSettings_GV100
             }
         }
     }
-    FOR_EACH_INDEX_IN_MASK_END;
+    FOR_EACH_IN_BITVECTOR_END();
 
 cleanup:
     portMemFree(bLinkDisconnected);
@@ -348,17 +350,28 @@ _knvlinkAreLinksDisconnected
     }
 
     portMemSet(pParams, 0, sizeof(*pParams));
-    pParams->linkMask = KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32);
+
+    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR, 
+        convertBitVectorToLinkMasks(&pKernelNvlink->enabledLinks,
+                                    &pParams->linkMask,
+                                    sizeof(pParams->linkMask),
+                                    &pParams->links), cleanup);
+
     pParams->bSublinkStateInst = NV_TRUE;
 
-    status = knvlinkExecGspRmRpc(pGpu, pKernelNvlink,
-                                 NV2080_CTRL_CMD_INTERNAL_NVLINK_GET_LINK_AND_CLOCK_INFO,
-                                 (void *)pParams, sizeof(*pParams));
-    if (status != NV_OK)
-        goto cleanup;
+    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
+        knvlinkExecGspRmRpc(pGpu, pKernelNvlink,
+                            NV2080_CTRL_CMD_INTERNAL_NVLINK_GET_LINK_AND_CLOCK_INFO,
+                            (void *)pParams, sizeof(*pParams)), cleanup);
 
-    FOR_EACH_INDEX_IN_MASK(32, linkId, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, linkId)
     {
+        if (linkId >= NV2080_CTRL_INTERNAL_NVLINK_MAX_ARR_SIZE)
+        {
+            NV_PRINTF(LEVEL_ERROR, "Trying to access incorrect link from link mask! %d\n", linkId);
+            goto cleanup;
+        }
+
         if ((pParams->linkInfo[linkId].linkState == NVLINK_LINKSTATE_SAFE) &&
             (pParams->linkInfo[linkId].txSublinkState == NVLINK_SUBLINK_STATE_TX_OFF) &&
             (pParams->linkInfo[linkId].rxSublinkState == NVLINK_SUBLINK_STATE_RX_OFF))
@@ -377,7 +390,7 @@ _knvlinkAreLinksDisconnected
             bLinkDisconnected[linkId] = NV_FALSE;
         }
     }
-    FOR_EACH_INDEX_IN_MASK_END;
+    FOR_EACH_IN_BITVECTOR_END();
 
 cleanup:
     portMemFree(pParams);
@@ -572,13 +585,15 @@ knvlinkSetUniqueFabricBaseAddress_GV100
 )
 {
     NV_STATUS status = NV_OK;
+    NvU32 enabledLinks;
 
     if (!knvlinkIsForcedConfig(pGpu, pKernelNvlink))
     {
         knvlinkCoreGetRemoteDeviceInfo(pGpu, pKernelNvlink);
 
+        enabledLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, enabledLinks, 32);
         status = knvlinkEnableLinksPostTopology_HAL(pGpu, pKernelNvlink,
-                                        KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32));
+                                                    enabledLinks);
         if (status != NV_OK)
         {
             NV_PRINTF(LEVEL_ERROR,

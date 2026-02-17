@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -96,6 +96,11 @@
 #include "class/clcb7d.h"
 #include "class/clcb7e.h"
 
+#include "class/clcc7a.h"
+#include "class/clcc7b.h"
+#include "class/clcc7d.h"
+#include "class/clcc7e.h"
+
 #include "gpu/disp/rg_line_callback/rg_line_callback.h"
 
 #include "rmapi/rmapi_utils.h"
@@ -107,6 +112,7 @@ kdispConstructEngine_IMPL(OBJGPU        *pGpu,
                           ENGDESCRIPTOR  engDesc)
 {
     NV_STATUS status;
+    NvU32 data;
 
     //
     // NOTE: DO NOT call IpVersion _HAL functions in ConstructEngine.
@@ -119,7 +125,7 @@ kdispConstructEngine_IMPL(OBJGPU        *pGpu,
     // Sanity check: the only time KERNEL_DISPLAY module should be enabled
     // while DISP is disabled is on KERNEL_ONLY build.
     //
-    NV_ASSERT(IS_VIRTUAL(pGpu) || IS_GSP_CLIENT(pGpu) || RMCFG_MODULE_DISP);
+    NV_ASSERT(IS_VIRTUAL(pGpu) || IS_FW_CLIENT(pGpu) || RMCFG_MODULE_DISP);
 
     //
     // We also need to check if we are in certain configurations which can't
@@ -141,9 +147,36 @@ kdispConstructEngine_IMPL(OBJGPU        *pGpu,
     // We defer checking whether DISP has been disabled some other way until
     // StateInit, when we can do a control call.
 
-    NV_ASSERT_OR_RETURN(pKernelDisplay->pLowLatencySpinLock == NULL, NV_ERR_INVALID_STATE);
-    pKernelDisplay->pLowLatencySpinLock = (PORT_SPINLOCK *) portSyncSpinlockCreate(portMemAllocatorGetGlobalNonPaged());
-    NV_ASSERT_OR_RETURN((pKernelDisplay->pLowLatencySpinLock != NULL), NV_ERR_INSUFFICIENT_RESOURCES);
+    // make sure this is cleared properly
+    pKernelDisplay->pOsVblankCallback = NULL;
+
+    portAtomicSetS32(&pKernelDisplay->lowLatencyLock, 0);
+
+    if ((osReadRegistryDword(pGpu, NV_REG_INTERNAL_PANEL_DISCONNECTED, &data) == NV_OK)
+        && (data == NV_REG_INTERNAL_PANEL_DISCONNECTED_ENABLE))
+    {
+        pKernelDisplay->setProperty(pKernelDisplay,
+                                    PDB_PROP_KDISP_INTERNAL_PANEL_DISCONNECTED,
+                                    NV_TRUE);
+    }
+    else
+    {
+        pKernelDisplay->setProperty(pKernelDisplay,
+                                    PDB_PROP_KDISP_INTERNAL_PANEL_DISCONNECTED,
+                                    NV_FALSE);
+    }
+
+    if (osReadRegistryDword(pGpu,
+                            NV_REG_STR_RM_ENABLE_AGGRESSIVE_VBLANK,
+                            &data) != NV_OK)
+    {
+        data = NV_REG_STR_RM_ENABLE_AGGRESSIVE_VBLANK_DEFAULT;
+    }
+    if (NV_REG_STR_RM_ENABLE_AGGRESSIVE_VBLANK_ENABLE == data)
+    {
+        pKernelDisplay->setProperty(pGpu, PDB_PROP_KDISP_AGGRESSIVE_VBLANK_HANDLING, NV_TRUE);
+    }
+
 
     return status;
 }
@@ -154,15 +187,10 @@ kdispDestruct_IMPL
     KernelDisplay *pKernelDisplay
 )
 {
-    if (pKernelDisplay->pLowLatencySpinLock != NULL)
-    {
-        portSyncSpinlockDestroy(pKernelDisplay->pLowLatencySpinLock);
-        pKernelDisplay->pLowLatencySpinLock = NULL;
-    }
-
     // Destroy children
     kdispDestructInstMem_HAL(pKernelDisplay);
     kdispDestructKhead(pKernelDisplay);
+    kdispDestroyVBlank(pKernelDisplay);
 }
 
 /*! Constructor for DisplayInstanceMemory */
@@ -347,14 +375,17 @@ kdispInitBrightcStateLoad_IMPL(OBJGPU *pGpu,
     portMemSet(pBrightcInfo, 0, sizeof(*pBrightcInfo));
 
     pBrightcInfo->status = status;
-    if ((pKernelDisplay != NULL) && (pKernelDisplay->pStaticInfo->internalDispActiveMask != 0) && !bInternalSkuFuseEnabled)
+    if ((pKernelDisplay != NULL)
+        && (pKernelDisplay->pStaticInfo->internalDispActiveMask != 0)
+        && !(bInternalSkuFuseEnabled
+             || (pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_INTERNAL_PANEL_DISCONNECTED))))
     {
         // Fill in the Backlight Method Data.
         pBrightcInfo->backLightDataSize = sizeof(pBrightcInfo->backLightData);
         status = osCallACPI_DSM(pGpu, ACPI_DSM_FUNCTION_CURRENT, NV_ACPI_GENERIC_FUNC_GETBACKLIGHT,
                                 (NvU32 *)(pBrightcInfo->backLightData),
                                 &pBrightcInfo->backLightDataSize);
-        pBrightcInfo->status = status;
+        pBrightcInfo->status = status; 
     }
 
     status = pRmApi->Control(pRmApi, pGpu->hInternalClient, pGpu->hInternalSubdevice,
@@ -681,7 +712,7 @@ kdispImportImpData_IMPL(KernelDisplay *pKernelDisplay)
     // rather than using a Linux OS layer function.  (The function is expected
     // to fail on other OSes besides Linux.)
     //
-    nvStatus = osTegraSocGetImpImportData(&params.tegraImpImportData);
+    nvStatus = osTegraSocGetImpImportData(pGpu, &params.tegraImpImportData);
     (void) nvStatus;    // shut up compiler warning re: unused variable
     NV_PRINTF(LEVEL_INFO,
               "osTegraSocGetImpImportData returned nvStatus = 0x%08X\n",
@@ -723,6 +754,7 @@ kdispGetIntChnClsForHwCls_IMPL
         case NVC97A_CURSOR_IMM_CHANNEL_PIO:
         case NVCA7A_CURSOR_IMM_CHANNEL_PIO:
         case NVCB7A_CURSOR_IMM_CHANNEL_PIO:
+        case NVCC7A_CURSOR_IMM_CHANNEL_PIO:
             *pDispChnClass = dispChnClass_Curs;
             break;
 
@@ -745,6 +777,7 @@ kdispGetIntChnClsForHwCls_IMPL
         case NVC97D_CORE_CHANNEL_DMA:
         case NVCA7D_CORE_CHANNEL_DMA:
         case NVCB7D_CORE_CHANNEL_DMA:
+        case NVCC7D_CORE_CHANNEL_DMA:
             *pDispChnClass = dispChnClass_Core;
             break;
 
@@ -758,6 +791,7 @@ kdispGetIntChnClsForHwCls_IMPL
         case NVC97B_WINDOW_IMM_CHANNEL_DMA:
         case NVCA7B_WINDOW_IMM_CHANNEL_DMA:
         case NVCB7B_WINDOW_IMM_CHANNEL_DMA:
+        case NVCC7B_WINDOW_IMM_CHANNEL_DMA:
             *pDispChnClass = dispChnClass_Winim;
             break;
 
@@ -767,6 +801,7 @@ kdispGetIntChnClsForHwCls_IMPL
         case NVC97E_WINDOW_CHANNEL_DMA:
         case NVCA7E_WINDOW_CHANNEL_DMA:
         case NVCB7E_WINDOW_CHANNEL_DMA:
+        case NVCC7E_WINDOW_CHANNEL_DMA:
             *pDispChnClass = dispChnClass_Win;
             break;
 
@@ -948,6 +983,318 @@ kdispNotifyEvent_IMPL
     }
 }
 
+void kdispAcquireLowLatencyLock(volatile NvS32 *pLowLatencyLock)
+{
+    while (!portAtomicCompareAndSwapS32(pLowLatencyLock, 1, 0))
+        osSpinLoop();
+}
+
+NvBool kdispAcquireLowLatencyLockConditional(volatile NvS32 *pLowLatencyLock)
+{
+    return portAtomicCompareAndSwapS32(pLowLatencyLock, 1, 0);
+}
+
+void kdispReleaseLowLatencyLock(volatile NvS32 *pLowLatencyLock)
+{
+    portAtomicCompareAndSwapS32(pLowLatencyLock, 0, 1);
+}
+
+NV_STATUS kdispSetupVBlank_IMPL(OBJGPU *pGpu, KernelDisplay *pKernelDisplay, void * pProc,
+                   void * pParm1, void * pParm2, NvU32 Head, void * pParm3)
+{
+    POSVBLANKCALLBACK pTmpCallback = pKernelDisplay->pOsVblankCallback;
+
+    if (pKernelDisplay == NULL)
+    {
+        return NV_ERR_NOT_SUPPORTED;
+    }
+
+    if (pProc == NULL)
+    {
+        // Clear this head from the callback mask
+        pKernelDisplay->vblankCallbackHeadMask &= ~NVBIT(Head);
+    }
+
+    // If the callback data has not been initialized, do so now.
+    if (!pTmpCallback)
+    {
+        pTmpCallback = portMemAllocNonPaged(sizeof(OSVBLANKCALLBACK) * kdispGetNumHeads(pKernelDisplay));
+        if (NULL != pTmpCallback)
+        {
+            portMemSet(pTmpCallback, 0x0, sizeof(OSVBLANKCALLBACK) * kdispGetNumHeads(pKernelDisplay));
+        }
+        else
+        {
+            return NV_ERR_INSUFFICIENT_RESOURCES;
+        }
+    }
+
+    //
+    // Need to protect pDevInfo->pOsVblankCallback accesses as
+    // kdispOptimizePerFrameOsCallbacks (headIntr_Vblank) may be running.
+    //
+    kdispAcquireLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+
+    pKernelDisplay->pOsVblankCallback = pTmpCallback;
+    if (pKernelDisplay->pOsVblankCallback)
+    {
+        pKernelDisplay->pOsVblankCallback[Head].pProc = pProc;
+        pKernelDisplay->pOsVblankCallback[Head].pParm1 = pParm1;
+        pKernelDisplay->pOsVblankCallback[Head].pParm2 = pParm2;
+        pKernelDisplay->pOsVblankCallback[Head].pParm3 = pParm3;
+    }
+
+    if (pProc)
+    {
+        // Add this head to the callback mask
+        pKernelDisplay->vblankCallbackHeadMask |= NVBIT(Head);
+    }
+
+    kdispReleaseLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+
+    return NV_OK;
+}
+
+void
+kdispDestroyVBlank_IMPL(KernelDisplay *pKernelDisplay)
+{
+    portMemFree(pKernelDisplay->pOsVblankCallback);
+    pKernelDisplay->pOsVblankCallback = NULL;
+}
+
+
+// This handling must be protected by the lowLatencyLock
+NV_STATUS kdispOptimizePerFrameOsCallbacks_IMPL
+(
+    OBJGPU              *pGpu,
+    KernelDisplay       *pKernelDisplay,
+    NvBool               clearIntr,
+    THREAD_STATE_NODE   *pThreadState,
+    NvU32               *pIntrServicedHeadMask,
+    MC_ENGINE_BITVECTOR *pIntrPending
+)
+{
+    NV_STATUS     status = NV_OK;
+    NvU32         headIntrMask = 0;
+    NvU32         head, exVblankServiceHeadMask = 0, vblankServicedHeadMask = 0;
+    NvBool        bIsLowLatencyInterruptLine = NV_FALSE;
+    Intr         *pIntr = GPU_GET_INTR(pGpu);
+
+    *pIntrServicedHeadMask = vblankServicedHeadMask;
+    NV_ASSERT_OR_RETURN(pKernelDisplay, NV_ERR_INVALID_ARGUMENT);
+
+    bIsLowLatencyInterruptLine = (pIntrPending != NULL) && bitVectorTest(pIntrPending, MC_ENGINE_IDX_DISP_LOW);
+
+    if (bIsLowLatencyInterruptLine)
+    {
+        intrClearLeafVector_HAL(pGpu, pIntr,
+                                pIntr->displayLowLatencyIntrVector,
+                                pThreadState);
+    }
+    // handle win_sem interrupt
+    kdispHandleWinSemEvt_HAL(pGpu, pKernelDisplay, pThreadState);
+
+    //
+    // Handle AWAKEN interrupts inline to avoid regressing high fps performance
+    // with enabling of immediate flip completion notification to OS (Bug 1976509)
+    //    
+    kdispServiceAwakenIntr_HAL(pGpu, pKernelDisplay, pThreadState);
+
+    exVblankServiceHeadMask = kdispGetDeferredVblankHeadMask(pKernelDisplay);
+
+    for (head = 0; head < kdispGetNumHeads(pKernelDisplay); ++head)
+    {
+        KernelHead *pKernelHead = KDISP_GET_HEAD(pKernelDisplay, head);
+
+        headIntrMask = kheadReadPendingRgLineIntr_HAL(pGpu, pKernelHead, pThreadState);
+
+        if (headIntrMask != 0)
+        {
+            NvU32 clearIntrMask = 0;
+
+            kheadProcessRgLineCallbacks_HAL(pGpu, pKernelHead, head, &headIntrMask, &clearIntrMask, osIsISR());
+
+            if (clearIntrMask != 0)
+            {
+                kheadResetRgLineIntrMask_HAL(pGpu, pKernelHead, clearIntrMask, pThreadState);
+            }
+        }
+
+        if (kheadReadPendingVblank_HAL(pGpu, pKernelHead, NULL, pThreadState))
+        {
+            headIntrMask |= headIntr_Vblank;
+        }
+
+        // Is vblank pending for this head?
+        if (headIntrMask & headIntr_Vblank)
+        {
+            OSVBLANKCALLBACK osVblankCallback;
+            VBLANKCALLBACK  *pCallback = NULL;
+            NvBool dataValid = NV_FALSE;
+
+            // Keep track of which heads that we serviced
+            vblankServicedHeadMask |= NVBIT(head);
+
+            // Clear the intr if we were asked to
+            if (clearIntr == NV_TRUE)
+            {
+                if (bIsLowLatencyInterruptLine)
+                {
+                    kheadResetPendingLastData_HAL(pGpu, pKernelHead, pThreadState);
+                }
+                else
+                {
+                    kheadResetPendingVblank_HAL(pGpu, pKernelHead, pThreadState);
+                }
+            }
+
+            //
+            // Copy the data locally as pKernelDisplay->pOsVblankCallback may be updated
+            // by kdispSetupVBlank as we are running here.
+            //
+            if (pKernelDisplay->pOsVblankCallback)
+            {
+                osVblankCallback = pKernelDisplay->pOsVblankCallback[head];
+                dataValid = NV_TRUE;
+            }
+
+            if (dataValid && osVblankCallback.pProc)
+            {
+                //
+                // Increment the count so that the DPC does not process this callback
+                // as well during headProcessVblankCallbacks.
+                //
+                pCallback = (VBLANKCALLBACK *) osVblankCallback.pParm3;
+                if (pCallback)
+                {
+                    // Increment count only when not deferred.
+                    if (!(exVblankServiceHeadMask & (NVBIT(head))))
+                    {
+                        pCallback->VBlankCount++;
+                    }
+                }
+
+                //
+                // Typically this is KMD's vblank callback function which can immediately
+                // call RmAddDeleteVblankCallback to remove and free this and the corresponding
+                // RM callback above - aka osVblankCallback.pParm3.
+                //
+
+                if (pCallback->bIsVblankNotifyEnable)
+                {
+                    osVblankCallback.pProc(osVblankCallback.pParm1, osVblankCallback.pParm2);
+                }
+            }
+        }
+    }
+
+    *pIntrServicedHeadMask = vblankServicedHeadMask;
+
+    if (bIsLowLatencyInterruptLine)
+    {
+        kdispIntrRetrigger_HAL(pGpu, pKernelDisplay, DISP_INTERRUPT_VECTOR_LOW_LATENCY, pThreadState);
+    }
+
+    return status;
+}
+
+
+// This function must be called with the lowLatencyLock held
+void
+kdispHandleAggressiveVblank_IMPL
+(
+    OBJGPU *pGpu,
+    KernelDisplay *pKernelDisplay,
+    THREAD_STATE_NODE *pThreadState,
+    MC_ENGINE_BITVECTOR *pPending
+)
+{
+    NV_STATUS rmStatus                   = NV_OK;
+    NvU32     vblankIntrServicedHeadMask = 0;
+
+    // This function is only called if the display interrupt is pending.
+
+    // Service some Vblank events locally
+    pKernelDisplay->isrVblankHeads = 0;
+
+    //
+    // This assumes aggressive vblank handling and can only be
+    // done on Windows (for which this function is anyway only
+    // compiled for).
+    //
+
+    // Service vblank and rg line intrs by calling KMD callback
+    rmStatus = kdispOptimizePerFrameOsCallbacks(pGpu, pKernelDisplay, NV_TRUE, pThreadState,
+                                             &vblankIntrServicedHeadMask, pPending);
+    NV_ASSERT(rmStatus == NV_OK);
+
+    //
+    // Need to setup deferred vblank handling for once the
+    // GPUs Lock is released since we cleared vblank intrs.
+    //
+    if (vblankIntrServicedHeadMask)
+    {
+        vblankIntrServicedHeadMask |= kdispGetDeferredVblankHeadMask(pKernelDisplay);
+        kdispSetDeferredVblankHeadMask(pKernelDisplay, vblankIntrServicedHeadMask);
+    }
+}
+
+/*!
+ * @brief Handle the aggressive vblank inline such that KMD callbacks are not delayed
+ *        in case of VR to avoid stutter.
+ *        This is required as a WAR for Bug# 1778552
+ *
+ * @param[in] pGpu               OBJGPU  pointer
+ * @param[in] pDisp              OBJDISP pointer
+ *
+ */
+void kdispApplyAggressiveVblankHandlingWar_IMPL
+(
+    OBJGPU *pGpu,
+    KernelDisplay *pKernelDisplay
+)
+{
+    //
+    // Check if the RM GPU lock is held before applying the WAR to
+    // mimic the exact behavior as the top half of interrupt handler
+    //
+    if(rmGpuLockIsOwner())
+    {
+        Intr *pIntr = GPU_GET_INTR(pGpu);
+        MC_ENGINE_BITVECTOR pending;
+
+        intrGetPendingLowLatencyHwDisplayIntr_HAL(pGpu, pIntr, &pending, NULL);
+
+        if (( pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE) && bitVectorTest(&pending, MC_ENGINE_IDX_DISP_LOW)) ||
+            (!pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE) && bitVectorTest(&pending, MC_ENGINE_IDX_DISP)))
+        {
+            kdispAcquireLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+
+#if defined(_WIN32_WINNT) && (_WIN32_WINNT >= 0x0600)
+            kdispHandleAggressiveVblank(pGpu, pKernelDisplay, NULL, &pending);
+#else
+
+            if (pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_AGGRESSIVE_VBLANK_HANDLING))
+            {
+                kdispHandleAggressiveVblank(pGpu, pKernelDisplay, NULL, &pending);
+            }
+            else
+            {
+                kdispServiceLowLatencyIntrs_HAL(pGpu, pKernelDisplay,
+                                                0,
+                                                VBLANK_STATE_PROCESS_ALL_CALLBACKS,
+                                                NULL /* threadstate */,
+                                                NULL /* vblankIntrServicedHeadMask */,
+                                                &pending);
+
+            }
+#endif // defined(_WIN32_WINNT) && (_WIN32_WINNT >= 0x0600) and !RMCFG_FEATURE_PLATFORM_WINDOWS
+
+            kdispReleaseLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+        }
+    }
+}
+
 void
 kdispSetWarPurgeSatellitesOnCoreFree_IMPL
 (
@@ -1016,24 +1363,10 @@ kdispInvokeRgLineCallback_KERNEL
     {
         rglcbInvoke(pCallbackObject, bIsIrqlIsr);
     }
-    else if (IS_GSP_CLIENT(ENG_GET_GPU(pKernelDisplay)))
-    {
-        //
-        // For offloaded RM case, getting a callback invocation without a registered callback could
-        // happen during or after deregistration: there might already have been an event in the
-        // queue by the time we asked physical RM to deconfigure the interrupt.
-        //
-        // Because this could lead to an A-B-A situation where a new callback is registered to the
-        // same slot and invoked in place of the old callback, we must assert against this case.
-        // To avoid this, RgLineCallback must drain the client RM event queue after deconfiguring
-        // the interrupt and before calling kdispRegisterRgLineCallback to deregister the callback.
-        //
-        NV_ASSERT_FAILED("got RgLineCallback invocation for null callback");
-    }
     else
     {
         //
-        // For the monolithic RM case, getting a callback invocation without a registered callback
+        // On Kernel RM getting a callback invocation without a registered callback
         // could happen during registration: after configuring hardware for the interrupt, but
         // before registering the callback with KernelDisplay, the interrupt could be handled.
         //
@@ -1332,7 +1665,7 @@ kdispServiceLowLatencyIntrs_KERNEL
     if (!unionNonEmptyQueues)
     {
         // all queues (belonging to heads with pending vblank ints) are empty.
-        if (IS_GSP_CLIENT(pGpu) ||
+        if (IS_FW_CLIENT(pGpu) ||
             pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE))
         {
             for (Head = 0; Head < kdispGetNumHeads(pKernelDisplay); Head++)
@@ -1367,6 +1700,11 @@ kdispServiceLowLatencyIntrs_KERNEL
         for (i = 0; i < kdispGetNumHeads(pKernelDisplay); i++)
         {
             pKernelHead = KDISP_GET_HEAD(pKernelDisplay, i);
+            // Only reset the heads which we have serviced.
+            if ((pending & NVBIT(i)) == 0)
+            {
+                continue;
+            }
             kheadResetPendingLastData_HAL(pGpu, pKernelHead, pThreadState);
         }
     }
@@ -1388,7 +1726,7 @@ kdispServiceLowLatencyIntrs_KERNEL
         for (i = 0; i < kdispGetNumHeads(pKernelDisplay); i++)
         {
             pKernelHead = KDISP_GET_HEAD(pKernelDisplay, i);
-            if (IS_GSP_CLIENT(pGpu))
+            if (IS_FW_CLIENT(pGpu))
             {
                 kheadResetPendingLastData_HAL(pGpu, pKernelHead, pThreadState);
             }
@@ -1416,6 +1754,7 @@ done:
     if (bIsLowLatencyInterruptLine)
     {
         kdispIntrRetrigger_HAL(pGpu, pKernelDisplay, DISP_INTERRUPT_VECTOR_LOW_LATENCY, pThreadState);
+        intrReenableIntrMask(pGpu, pIntr);
     }
 
     return;
@@ -1477,9 +1816,9 @@ kdispServiceInterrupt_KERNEL
     NV_ASSERT_OR_RETURN(pParams != NULL, 0);
     NV_ASSERT_OR_RETURN(pParams->engineIdx == MC_ENGINE_IDX_DISP ||
                         pParams->engineIdx == MC_ENGINE_IDX_DISP_LOW, 0);
-    NV_ASSERT_OR_RETURN(pKernelDisplay->pLowLatencySpinLock != NULL, 0);
 
-    portSyncSpinlockAcquire(pKernelDisplay->pLowLatencySpinLock);
+    kdispAcquireLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+
     //
     // Encode the interrupt type for kdispServiceLowLatencyIntrs_HAL
     // to know what interrupt type it is
@@ -1491,7 +1830,7 @@ kdispServiceInterrupt_KERNEL
                                     VBLANK_STATE_PROCESS_LOW_LATENCY,
                                     NULL, NULL, &intrPending);
 
-    portSyncSpinlockRelease(pKernelDisplay->pLowLatencySpinLock);
+    kdispReleaseLowLatencyLock(&pKernelDisplay->lowLatencyLock);
 
     return 0;
 }

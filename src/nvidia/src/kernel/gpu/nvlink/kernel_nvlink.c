@@ -34,6 +34,7 @@
 #include "gpu/gpu.h"
 #include "kernel/gpu/nvlink/kernel_nvlink.h"
 #include "kernel/gpu/nvlink/kernel_ioctrl.h"
+#include "kernel/gpu/nvlink/common_nvlink.h"
 #include "kernel/gpu/device/device.h"
 #include "kernel/gpu/bus/p2p_api.h"
 #include "kernel/gpu/fifo/kernel_channel.h"
@@ -43,9 +44,21 @@
 #include "gpu/ce/kernel_ce.h"
 #include "platform/sli/sli.h"
 #include "gpu/gpu_fabric_probe.h"
+#include "swref/common_def_nvlink.h"
+#include "gsp/gspifpub.h"
 #include "compute/imex_session_api.h"
 #include "compute/fabric.h"
 #include "mem_mgr/mem_multicast_fabric.h"
+
+#include "gpu/conf_compute/ccsl.h"
+
+#include "spdm/rmspdmvendordef.h"
+#include "gpu/spdm/spdm.h"
+#include "kernel/gpu/spdm/libspdm_includes.h"
+#include "hal/library/cryptlib.h"
+
+static NV_STATUS _knvlinkRefreshEncryptionKeys(OBJGPU *, KernelNvlink *, NvU8 *, NvU32, sessionKeyRefreshStage, NvU8);
+static NV_STATUS _knvlinkSendEncryptionKeys(OBJGPU *, KernelNvlink *, NvU8 *, NvU32);
 
 /*!
  * @brief Is NVLINK topology forced? NVLink topology is considered
@@ -128,12 +141,12 @@ knvlinkIsP2pLoopbackSupported_IMPL
         return NV_FALSE;
     }
 
-    FOR_EACH_INDEX_IN_MASK(32, i, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, i)
     {
         if (knvlinkIsP2pLoopbackSupportedPerLink_IMPL(pGpu, pKernelNvlink, i))
             return NV_TRUE;
     }
-    FOR_EACH_INDEX_IN_MASK_END
+    FOR_EACH_IN_BITVECTOR_END();
 
 #endif
 
@@ -173,7 +186,7 @@ knvlinkIsP2pLoopbackSupportedPerLink_IMPL
     }
 
     // Return false if the given link is disabled
-    if (!(NVBIT(link) & KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32)))
+    if (!bitVectorTest(&pKernelNvlink->enabledLinks, link))
     {
         return NV_FALSE;
     }
@@ -274,6 +287,32 @@ _knvlinkCheckFabricCliqueId
     return NV_TRUE;
 }
 
+static NvBool
+_knvlinkCheckFabricProbeHealth
+(
+    OBJGPU       *pGpu,
+    OBJGPU       *pPeerGpu
+)
+{
+    NvU32 healthStatusMask = 0;
+    NvU32 peerHealthStatusMask = 0;
+    NV_STATUS status;
+    
+    status = gpuFabricProbeGetFabricHealthStatus(pGpu->pGpuFabricProbeInfoKernel, &healthStatusMask);
+    NV_ASSERT_OK_OR_RETURN(status);
+ 
+    status = gpuFabricProbeGetFabricHealthStatus(pPeerGpu->pGpuFabricProbeInfoKernel, &peerHealthStatusMask);
+    NV_ASSERT_OK_OR_RETURN(status);
+ 
+    if (nvlinkGetFabricHealthSummary(healthStatusMask) == NVLINK_INBAND_FABRIC_HEALTH_SUMMARY_UNHEALTHY ||
+        nvlinkGetFabricHealthSummary(peerHealthStatusMask) == NVLINK_INBAND_FABRIC_HEALTH_SUMMARY_UNHEALTHY)
+    {
+        return NV_FALSE;
+    }
+    
+    return NV_TRUE;
+}
+
 /*!
  * @brief Checks whether EGM addresses are valid for P2P
  * when GPU is connected to NVSwitch
@@ -370,7 +409,8 @@ knvlinkCheckNvswitchP2pConfig_IMPL
 
         if (gpuFabricProbeIsSupported(pGpu) && gpuFabricProbeIsSupported(pPeerGpu))
         {
-            if (!_knvlinkCheckFabricCliqueId(pGpu, pPeerGpu))
+            if (!_knvlinkCheckFabricCliqueId(pGpu, pPeerGpu) ||
+                !_knvlinkCheckFabricProbeHealth(pGpu, pPeerGpu))
             {
                 return NV_FALSE;
             }
@@ -439,6 +479,7 @@ knvlinkGetP2pConnectionStatus_IMPL
     KernelNvlink *pKernelNvlink0 = pKernelNvlink;
     KernelNvlink *pKernelNvlink1 = NULL;
     NvU32         numPeerLinks   = 0;
+    NvU32         enabledLinks;
 
     if (pGpu1 == NULL)
     {
@@ -508,8 +549,8 @@ knvlinkGetP2pConnectionStatus_IMPL
     }
 
     // Post topology link enable on links of local GPU
-    status = knvlinkEnableLinksPostTopology_HAL(pGpu0, pKernelNvlink0,
-                                                KNVLINK_GET_MASK(pKernelNvlink0, enabledLinks, 32));
+    enabledLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink0, enabledLinks, 32);
+    status = knvlinkEnableLinksPostTopology_HAL(pGpu0, pKernelNvlink0, enabledLinks);
     if (status != NV_OK)
     {
         return status;
@@ -527,8 +568,8 @@ knvlinkGetP2pConnectionStatus_IMPL
         knvlinkCoreGetRemoteDeviceInfo(pGpu1, pKernelNvlink1);
 
         // Post topology link enable on links of remote GPU
-        status = knvlinkEnableLinksPostTopology_HAL(pGpu1, pKernelNvlink1,
-                                                   KNVLINK_GET_MASK(pKernelNvlink1, enabledLinks, 32));
+        enabledLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink1, enabledLinks, 32);
+        status = knvlinkEnableLinksPostTopology_HAL(pGpu1, pKernelNvlink1, enabledLinks);
         if (status != NV_OK)
         {
             return status;
@@ -549,8 +590,8 @@ knvlinkGetP2pConnectionStatus_IMPL
             }
 
             // Post topology link enable on links of remote GPU
-            status = knvlinkEnableLinksPostTopology_HAL(pGpu1, pKernelNvlink1,
-                                                        KNVLINK_GET_MASK(pKernelNvlink1, enabledLinks, 32));
+            enabledLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink1, enabledLinks, 32);
+            status = knvlinkEnableLinksPostTopology_HAL(pGpu1, pKernelNvlink1, enabledLinks);
             if (status != NV_OK)
             {
                 return status;
@@ -698,22 +739,22 @@ const static NVLINK_INBAND_MSG_CALLBACK nvlink_inband_callbacks[] =
     {
         .messageType = NVLINK_INBAND_MSG_TYPE_GPU_PROBE_RSP,
         .pCallback = gpuFabricProbeReceiveKernelCallback,
-        .wqItemFlags = OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                       OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE
+        .wqItemFlags = {.bLockSema = NV_TRUE,
+                        .bLockGpuGroupSubdevice = NV_TRUE}
     },
 
     {
         .messageType = NVLINK_INBAND_MSG_TYPE_MC_TEAM_SETUP_RSP,
         .pCallback = memorymulticastfabricTeamSetupResponseCallback,
-        .wqItemFlags = OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                       OS_QUEUE_WORKITEM_FLAGS_LOCK_GPUS
+        .wqItemFlags = {.bLockSema = NV_TRUE,
+                        .bLockGpus = NV_TRUE}
     },
 
     {
         .messageType = NVLINK_INBAND_MSG_TYPE_GPU_PROBE_UPDATE_REQ,
         .pCallback = gpuFabricProbeReceiveUpdateKernelCallback,
-        .wqItemFlags = OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                       OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE
+        .wqItemFlags = {.bLockSema = NV_TRUE,
+                        .bLockGpuGroupSubdevice = NV_TRUE}
     }
 };
 
@@ -746,7 +787,7 @@ knvlinkInbandMsgCallbackDispatcher_WORKITEM
     if (pCb == NULL)
     {
         NV_PRINTF(LEVEL_ERROR,
-                  "No Callback Registered for type %d. Dropping the msg\n", 
+                  "No Callback Registered for type %d. Dropping the msg\n",
                   pHeader->type);
         return;
     }
@@ -816,10 +857,12 @@ knvlinkInbandMsgCallbackDispatcher_IMPL
     pData->dataSize = dataSize;
     portMemCopy(pData->data, pData->dataSize, pMessage, dataSize);
 
-    status = osQueueWorkItemWithFlags(pGpu, knvlinkInbandMsgCallbackDispatcher_WORKITEM, pData,
-                                      pCb->wqItemFlags);
-     if (status != NV_OK)
-     {
+    status = osQueueWorkItem(pGpu,
+                             knvlinkInbandMsgCallbackDispatcher_WORKITEM,
+                             pData,
+                             pCb->wqItemFlags);
+    if (status != NV_OK)
+    {
         portMemFree(pData);
         return status;
      }
@@ -850,30 +893,32 @@ knvlinkSendInbandData_IMPL
  * @param[in] pGpu           OBJGPU pointer
  * @param[in] pKernelNvlink  KernelNvlink pointer
  */
-NvU64
+NVLINK_BIT_VECTOR *
 knvlinkGetEnabledLinkMask_IMPL
 (
     OBJGPU       *pGpu,
     KernelNvlink *pKernelNvlink
 )
 {
-    return KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 64);
+    return &pKernelNvlink->enabledLinks;
 }
 
 /*!
  * @brief Return the mask of links discovered on the system
  *
- * @param[in] pGpu           OBJGPU pointer
- * @param[in] pKernelNvlink  KernelNvlink pointer
+ * @param[in]  pGpu           OBJGPU pointer
+ * @param[in]  pKernelNvlink  KernelNvlink pointer
+ * @return     Returns back a NVLINK_BIT_VECTOR *
+ *              caller must check value is non-NULL
  */
-NvU64
+NVLINK_BIT_VECTOR *
 knvlinkGetDiscoveredLinkMask_IMPL
 (
-    OBJGPU       *pGpu,
-    KernelNvlink *pKernelNvlink
+    OBJGPU            *pGpu,
+    KernelNvlink      *pKernelNvlink
 )
 {
-    return KNVLINK_GET_MASK(pKernelNvlink, discoveredLinks, 64);
+    return &(pKernelNvlink->discoveredLinks);
 }
 
 /*!
@@ -918,12 +963,12 @@ knvlinkGetNumLinksToPeer_IMPL
     OBJGPU       *pRemoteGpu
 )
 {
-    NvU32 numPeerLinks =
+    NvU64 numPeerLinks =
         knvlinkGetLinkMaskToPeer(pGpu, pKernelNvlink, pRemoteGpu);
 
     if (numPeerLinks != 0)
     {
-        NUMSETBITS_32(numPeerLinks);
+        numPeerLinks = nvPopCount64(numPeerLinks);
     }
 
     return numPeerLinks;
@@ -1034,54 +1079,6 @@ knvlinkSetLinkMaskToPeer_IMPL
     }
 
     return NV_OK;
-}
-
-/*!
- * @brief Get the mask of links that are peer links
- *
- * @param[in] pGpu           OBJGPU pointer
- * @param[in] pKernelNvlink  KernelNvlink pointer
- */
-NvU32
-knvlinkGetPeersNvlinkMaskFromHshub_IMPL
-(
-    OBJGPU       *pGpu,
-    KernelNvlink *pKernelNvlink
-)
-{
-    NV_STATUS status       = NV_OK;
-    NvU32     peerLinkMask = 0;
-    NvU32     i;
-
-    NV2080_CTRL_INTERNAL_NVLINK_GET_LINK_AND_CLOCK_INFO_PARAMS *pParams;
-
-    pParams = portMemAllocStackOrHeap(sizeof(*pParams));
-    if (pParams == NULL)
-    {
-        return 0;
-    }
-
-    portMemSet(pParams, 0, sizeof(*pParams));
-    pParams->linkMask = KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32);
-    pParams->bSublinkStateInst = NV_TRUE;
-
-    status = knvlinkExecGspRmRpc(pGpu, pKernelNvlink,
-                                 NV2080_CTRL_CMD_INTERNAL_NVLINK_GET_LINK_AND_CLOCK_INFO,
-                                 pParams, sizeof(*pParams));
-    if (status != NV_OK)
-        goto cleanup;
-
-    // Scan enabled links for peer connections
-    FOR_EACH_INDEX_IN_MASK(32, i, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
-    {
-        if (pParams->linkInfo[i].bLinkConnectedToPeer)
-            peerLinkMask |= NVBIT(i);
-    }
-    FOR_EACH_INDEX_IN_MASK_END;
-
-cleanup:
-    portMemFreeStackOrHeap(pParams);
-    return peerLinkMask;
 }
 
 /*!
@@ -1248,10 +1245,10 @@ knvlinkPrepareForXVEReset_IMPL
             // The connections have been successfully reset, update connected and disconnected
             // links masks on both the devices
             //
-            FOR_EACH_INDEX_IN_MASK(32, linkId, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
+            FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, linkId)
             {
                 pKernelNvlink->disconnectedLinkMask |=  NVBIT64(linkId);
-                pKernelNvlink->connectedLinksMask   &= ~NVBIT(linkId);
+                bitVectorClr(&pKernelNvlink->connectedLinksMask, linkId);
 
                 if (pKernelNvlink->nvlinkLinks[linkId].remoteEndInfo.deviceType !=
                                               NV2080_CTRL_NVLINK_DEVICE_INFO_DEVICE_TYPE_GPU)
@@ -1270,10 +1267,10 @@ knvlinkPrepareForXVEReset_IMPL
                     NvU32 remoteLinkId = pKernelNvlink->nvlinkLinks[linkId].remoteEndInfo.linkNumber;
 
                     pRemoteKernelNvlink->disconnectedLinkMask |=  NVBIT64(remoteLinkId);
-                    pRemoteKernelNvlink->connectedLinksMask   &= ~NVBIT(remoteLinkId);
+                    bitVectorClr(&pRemoteKernelNvlink->connectedLinksMask, remoteLinkId);
                 }
             }
-            FOR_EACH_INDEX_IN_MASK_END;
+            FOR_EACH_IN_BITVECTOR_END();
         }
 #endif
 
@@ -1288,7 +1285,7 @@ knvlinkPrepareForXVEReset_IMPL
         NV2080_CTRL_INTERNAL_NVLINK_RESET_LINKS_PARAMS resetLinksparams;
 
         portMemSet(&resetLinksparams, 0, sizeof(resetLinksparams));
-        resetLinksparams.linkMask = KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32);
+        resetLinksparams.linkMask = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, enabledLinks, 32);
         resetLinksparams.flags    = NV2080_CTRL_INTERNAL_NVLINK_RESET_FLAGS_TOGGLE;
 
         status = knvlinkExecGspRmRpc(pGpu, pKernelNvlink,
@@ -1366,7 +1363,7 @@ knvlinkDetectNvswitchProxy_IMPL
         return;
     }
 
-    if (pKernelNvlink->discoveredLinks == 0)
+    if (bitVectorTestAllCleared(&pKernelNvlink->discoveredLinks))
     {
         return;
     }
@@ -1375,7 +1372,13 @@ knvlinkDetectNvswitchProxy_IMPL
     NV2080_CTRL_INTERNAL_NVLINK_ARE_LINKS_TRAINED_PARAMS linkTrainedParams;
 
     portMemSet(&linkTrainedParams, 0, sizeof(linkTrainedParams));
-    linkTrainedParams.linkMask    = KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32);
+    status = convertBitVectorToLinkMasks(&pKernelNvlink->enabledLinks, NULL,
+                                        0, &linkTrainedParams.linkMask);
+    if (status != NV_OK)
+    {
+        NV_PRINTF(LEVEL_ERROR, "Failed to convert enabled links to RMCTRL mask\n");
+        return;
+    }
     linkTrainedParams.bActiveOnly = NV_FALSE;
 
     // Reset timeout to clear any accumulated timeouts from link init
@@ -1393,14 +1396,14 @@ knvlinkDetectNvswitchProxy_IMPL
         return;
     }
 
-    FOR_EACH_INDEX_IN_MASK(32, i, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, i)
     {
         if (!linkTrainedParams.bIsLinkActive[i])
         {
             return;
         }
     }
-    FOR_EACH_INDEX_IN_MASK_END;
+    FOR_EACH_IN_BITVECTOR_END();
 
     NV2080_CTRL_INTERNAL_NVLINK_GET_SET_NVSWITCH_FABRIC_ADDR_PARAMS params;
 
@@ -1505,15 +1508,15 @@ knvlinkSetUniqueFlaBaseAddress_IMPL
 {
     NV_STATUS  status     = NV_OK;
     KernelBus *pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
+    NvU32 enabledLinks;
 
     NV2080_CTRL_NVLINK_GET_SET_NVSWITCH_FLA_ADDR_PARAMS params;
 
     if (!knvlinkIsForcedConfig(pGpu, pKernelNvlink))
     {
         knvlinkCoreGetRemoteDeviceInfo(pGpu, pKernelNvlink);
-
-        status = knvlinkEnableLinksPostTopology_HAL(pGpu, pKernelNvlink,
-                                                    KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32));
+        enabledLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, enabledLinks, 32);
+        status = knvlinkEnableLinksPostTopology_HAL(pGpu, pKernelNvlink, enabledLinks);
         if (status != NV_OK)
         {
             return status;
@@ -1571,15 +1574,29 @@ knvlinkSyncLinkMasksAndVbiosInfo_IMPL
 )
 {
     NV_STATUS status = NV_OK;
+    NVLINK_BIT_VECTOR localLinkMaskBitVector;
 
     NV2080_CTRL_NVLINK_SYNC_LINK_MASKS_AND_VBIOS_INFO_PARAMS params;
 
     portMemSet(&params, 0, sizeof(params));
 
-    params.discoveredLinks     = pKernelNvlink->discoveredLinks;
-    params.connectedLinksMask  = pKernelNvlink->connectedLinksMask;
-    params.bridgeSensableLinks = pKernelNvlink->bridgeSensableLinks;
+    params.discoveredLinks     = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, discoveredLinks, 64);
+    params.connectedLinksMask  = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, connectedLinksMask, 64);
+    params.bridgeSensableLinks = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink, bridgeSensableLinks, 64);
     params.bridgedLinks        = pKernelNvlink->bridgedLinks;
+
+    // Convert from NVLINK_BIT_VECTOR to RMCTRL mask
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&pKernelNvlink->discoveredLinks, NULL,
+                                    0, &params.discoveredLinkMasks));
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&pKernelNvlink->connectedLinksMask, NULL,
+                                    0, &params.connectedLinks));
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&pKernelNvlink->bridgeSensableLinks, NULL,
+                                    0, &params.bridgeSensableLinkMasks));
+    params.bridgedLinkMasks.masks[0] = pKernelNvlink->bridgedLinks;
+    params.bridgedLinkMasks.lenMasks = 1;
 
     // Reset timeout to clear any accumulated timeouts from link init
     if (IS_GSP_CLIENT(pGpu))
@@ -1591,9 +1608,26 @@ knvlinkSyncLinkMasksAndVbiosInfo_IMPL
                                  NV2080_CTRL_CMD_NVLINK_SYNC_LINK_MASKS_AND_VBIOS_INFO,
                                  (void *)&params, sizeof(params));
 
-    pKernelNvlink->vbiosDisabledLinkMask = params.vbiosDisabledLinkMask;
-    pKernelNvlink->initializedLinks      = params.initializedLinks;
-    pKernelNvlink->initDisabledLinksMask = params.initDisabledLinksMask;
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertLinkMasksToBitVector(&params.vbiosDisabledLinkMask, sizeof(params.vbiosDisabledLinkMask),
+                                    &params.vbiosDisabledLinks, &pKernelNvlink->vbiosDisabledLinkMask));
+
+    bitVectorClrAll(&localLinkMaskBitVector);
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertLinkMasksToBitVector(&params.initializedLinks, sizeof(params.initializedLinks),
+                                    &params.initializedLinkMasks, &localLinkMaskBitVector));
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&localLinkMaskBitVector, &pKernelNvlink->initializedLinks,
+                                    sizeof(pKernelNvlink->initializedLinks), NULL));
+
+    bitVectorClrAll(&localLinkMaskBitVector);
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertLinkMasksToBitVector(&params.initDisabledLinksMask, sizeof(params.initDisabledLinksMask),
+                                    &params.initDisabledLinks, &localLinkMaskBitVector));
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&localLinkMaskBitVector, &pKernelNvlink->initDisabledLinksMask,
+                                    sizeof(pKernelNvlink->initDisabledLinksMask), NULL));
+
     pKernelNvlink->bEnableSafeModeAtLoad = params.bEnableSafeModeAtLoad;
     pKernelNvlink->bEnableTrainingAtLoad = params.bEnableTrainingAtLoad;
 
@@ -1776,13 +1810,14 @@ knvlinkUpdatePostRxDetectLinkMask_IMPL
         return status;
     }
 
-    pKernelNvlink->postRxDetLinkMask = params.postRxDetLinkMask;
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, 
+        convertLinkMasksToBitVector(&params.postRxDetLinkMask, sizeof(params.postRxDetLinkMask), NULL, &pKernelNvlink->postRxDetLinkMask));
 
-    FOR_EACH_INDEX_IN_MASK(32, i, KNVLINK_GET_MASK(pKernelNvlink, enabledLinks, 32))
+    FOR_EACH_IN_BITVECTOR(&pKernelNvlink->enabledLinks, i)
     {
         pKernelNvlink->nvlinkLinks[i].laneRxdetStatusMask = params.laneRxdetStatusMask[i];
     }
-    FOR_EACH_INDEX_IN_MASK_END;
+    FOR_EACH_IN_BITVECTOR_END();
 
     return NV_OK;
 }
@@ -1831,7 +1866,12 @@ knvlinkCopyNvlinkDeviceInfo_IMPL
     pKernelNvlink->ioctrlMask        = pNvlinkInfoParams->ioctrlMask;
     pKernelNvlink->ioctrlNumEntries  = pNvlinkInfoParams->ioctrlNumEntries;
     pKernelNvlink->ioctrlSize        = pNvlinkInfoParams->ioctrlSize;
-    pKernelNvlink->discoveredLinks   = pNvlinkInfoParams->discoveredLinks;
+
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+            convertLinkMasksToBitVector(NULL, 0U,
+                                        &pNvlinkInfoParams->discoveredLinks,
+                                        &pKernelNvlink->discoveredLinks));
+
     pKernelNvlink->ipVerNvlink       = pNvlinkInfoParams->ipVerNvlink;
     pKernelNvlink->maxSupportedLinks = pNvlinkInfoParams->maxSupportedLinks;
 
@@ -1933,6 +1973,7 @@ knvlinkSetupTopologyForForcedConfig_IMPL
 {
     NV_STATUS status  = NV_OK;
     NvU32     i, physLink;
+    NVLINK_BIT_VECTOR registryLinkMaskVec;
 
     // Start with all links disabled and no forced config in effect
     pKernelNvlink->bRegistryLinkOverride = NV_TRUE;
@@ -1942,7 +1983,7 @@ knvlinkSetupTopologyForForcedConfig_IMPL
     for (i = 0; i < NVLINK_MAX_LINKS_SW; i++)
     {
         // Filter against the links discovered from IOCTRL
-        if (!(pKernelNvlink->discoveredLinks & NVBIT64(i)))
+        if (!(bitVectorTest(&pKernelNvlink->discoveredLinks, i) ))
             continue;
 
         // The physical link is guaranteed valid in all cases
@@ -2004,8 +2045,9 @@ knvlinkSetupTopologyForForcedConfig_IMPL
     }
 
     // Update enabledLinks mask with the mask of forced link configurations
-    pKernelNvlink->enabledLinks = KNVLINK_GET_MASK(pKernelNvlink, discoveredLinks, 64) &
-                                  KNVLINK_GET_MASK(pKernelNvlink, registryLinkMask, 64);
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertMaskToBitVector(KNVLINK_GET_MASK(pKernelNvlink, registryLinkMask, 64), &registryLinkMaskVec));
+    bitVectorAnd(&pKernelNvlink->enabledLinks, &pKernelNvlink->discoveredLinks, &registryLinkMaskVec);
 
     return NV_OK;
 }
@@ -2117,13 +2159,14 @@ knvlinkProcessInitDisabledLinks_IMPL
     KernelNvlink *pKernelNvlink
 )
 {
-    NvU32     mask                 = 0;
+    NV2080_CTRL_NVLINK_LINK_MASK links = {0};
     NvBool    bSkipHwNvlinkDisable = 0;
     NV_STATUS status               = NV_OK;
+    NVLINK_BIT_VECTOR localLinkMask;
 
-    NV2080_CTRL_NVLINK_PROCESS_INIT_DISABLED_LINKS_PARAMS params;
+    NV2080_CTRL_NVLINK_PROCESS_INIT_DISABLED_LINKS_PARAMS params = {0};
 
-    status = gpumgrGetGpuInitDisabledNvlinks(pGpu->gpuId, &mask, &bSkipHwNvlinkDisable);
+    status = gpumgrGetGpuInitDisabledNvlinks(pGpu->gpuId, &links, &bSkipHwNvlinkDisable);
     if (status != NV_OK)
     {
         NV_PRINTF(LEVEL_ERROR, "Failed to get init disabled links from gpumgr\n");
@@ -2132,8 +2175,8 @@ knvlinkProcessInitDisabledLinks_IMPL
 
     portMemSet(&params, 0, sizeof(params));
 
-    params.initDisabledLinksMask = mask;
-    params.bSkipHwNvlinkDisable  = bSkipHwNvlinkDisable;
+    params.initDisabledLinks = links;
+    params.bSkipHwNvlinkDisable = bSkipHwNvlinkDisable;
 
     status = knvlinkExecGspRmRpc(pGpu, pKernelNvlink,
                                  NV2080_CTRL_CMD_NVLINK_PROCESS_INIT_DISABLED_LINKS,
@@ -2144,7 +2187,12 @@ knvlinkProcessInitDisabledLinks_IMPL
         return status;
     }
 
-    pKernelNvlink->initDisabledLinksMask = params.initDisabledLinksMask;
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertLinkMasksToBitVector(NULL, 0, &params.initDisabledLinks, &localLinkMask));
+
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+        convertBitVectorToLinkMasks(&localLinkMask, &pKernelNvlink->initDisabledLinksMask,
+                                    sizeof(pKernelNvlink->initDisabledLinksMask), NULL));
 
     return NV_OK;
 }
@@ -2249,7 +2297,7 @@ knvlinkFatalErrorRecovery_WORKITEM
     {
         NVLINK_UNCONTAINED_ERROR_RECOVERY_INFO *pInfo = (NVLINK_UNCONTAINED_ERROR_RECOVERY_INFO *)pArgs;
         if (pInfo != NULL)
-            portAtomicSetU32(&pInfo->rcCompleted, 1); 
+            portAtomicSetU32(&pInfo->rcCompleted, 1);
     }
 }
 
@@ -2283,7 +2331,7 @@ knvlinkUncontainedErrorRecoveryUvmIdle_WORKITEM
     case NV_OK:
         // UVM channels were successfully suspended
 
-        portAtomicSetU32(&pInfo->uvmIdle, 1); 
+        portAtomicSetU32(&pInfo->uvmIdle, 1);
         break;
 
     case NV_ERR_ECC_ERROR:
@@ -2315,7 +2363,7 @@ knvlinkUncontainedErrorRecoveryUvmResume_WORKITEM
     osQueueResumeP2PHandler(pInfo->uuid);
 
     // Clear the active recovery
-    portAtomicSetU32(&pInfo->active, 0); 
+    portAtomicSetU32(&pInfo->active, 0);
 }
 
 void
@@ -2336,7 +2384,7 @@ knvlinkUncontainedErrorRecoveryReadyCheck_WORKITEM
     if ((currentTime - pInfo->startTime) <= NVLINK_UNCONTAINED_ERROR_IDLE_PERIOD_NS)
         return;
 
-    portAtomicSetU32(&pInfo->recoveryReady, 1); 
+    portAtomicSetU32(&pInfo->recoveryReady, 1);
 
 remove:
     osRemove1HzCallback(pGpu, knvlinkUncontainedErrorRecoveryReadyCheck_WORKITEM, pArgs);
@@ -2421,8 +2469,10 @@ knvlinkUncontainedErrorRecovery_WORKITEM
 
     // Launch lockless workitem to resume P2P in UVM
     NV_ASSERT_OK_OR_GOTO(status,
-        osQueueWorkItemWithFlags(pGpu, knvlinkUncontainedErrorRecoveryUvmResume_WORKITEM, pInfo,
-                                 (OS_QUEUE_WORKITEM_FLAGS_DONT_FREE_PARAMS)),
+        osQueueWorkItem(pGpu,
+                        knvlinkUncontainedErrorRecoveryUvmResume_WORKITEM,
+                        pInfo,
+                        (OsQueueWorkItemFlags){.bDontFreeParams = NV_TRUE}),
         exit);
 
 exit:
@@ -2438,12 +2488,13 @@ exit:
     if (bDegrade)
     {
         NV_ASSERT_OK_OR_CAPTURE_FIRST_ERROR(status,
-            osQueueWorkItemWithFlags(pGpu, knvlinkAbortUncontainedErrorRecovery_WORKITEM, NULL,
-                                     (OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                                       OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RW |
-                                       OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE)));
-
-
+            osQueueWorkItem(pGpu,
+                knvlinkAbortUncontainedErrorRecovery_WORKITEM,
+                NULL,
+                (OsQueueWorkItemFlags){
+                    .bLockSema = NV_TRUE,
+                    .apiLock = WORKITEM_FLAGS_API_LOCK_READ_WRITE,
+                    .bLockGpuGroupSubdevice = NV_TRUE}));
     }
 }
 
@@ -2496,10 +2547,10 @@ knvlinkFatalErrorRecovery_IMPL
         }
 
         // Kickoff the recovery process
-        portAtomicSetU32(&pInfo->active, 1); 
-        portAtomicSetU32(&pInfo->rcCompleted, 0); 
-        portAtomicSetU32(&pInfo->uvmIdle, 0); 
-        portAtomicSetU32(&pInfo->recoveryReady, 0); 
+        portAtomicSetU32(&pInfo->active, 1);
+        portAtomicSetU32(&pInfo->rcCompleted, 0);
+        portAtomicSetU32(&pInfo->uvmIdle, 0);
+        portAtomicSetU32(&pInfo->recoveryReady, 0);
         NV_ASSERT_OK_OR_GOTO(status, tmrGetCurrentTime(pTmr, &pInfo->startTime), fail);
 
         {
@@ -2517,18 +2568,25 @@ knvlinkFatalErrorRecovery_IMPL
         }
 
         // Launch workitem to RC outstanding IMEX clients
-        NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
-            osQueueWorkItemWithFlags(pGpu, knvlinkFatalErrorRecovery_WORKITEM, pInfo,
-                                     (OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                                       OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RW |
-                                       OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE |
-                                       OS_QUEUE_WORKITEM_FLAGS_DONT_FREE_PARAMS)),
+        NV_CHECK_OK_OR_GOTO(status,
+            LEVEL_ERROR,
+            osQueueWorkItem(pGpu,
+                            knvlinkFatalErrorRecovery_WORKITEM,
+                            pInfo,
+                            (OsQueueWorkItemFlags){
+                                .bLockSema = NV_TRUE,
+                                .apiLock = WORKITEM_FLAGS_API_LOCK_READ_WRITE,
+                                .bLockGpuGroupSubdevice = NV_TRUE,
+                                .bDontFreeParams = NV_TRUE}),
             fail);
 
         // Launch lockless workitem to idle UVM channels
-        NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
-            osQueueWorkItemWithFlags(pGpu, knvlinkUncontainedErrorRecoveryUvmIdle_WORKITEM, pInfo,
-                                     (OS_QUEUE_WORKITEM_FLAGS_DONT_FREE_PARAMS)),
+        NV_CHECK_OK_OR_GOTO(status,
+            LEVEL_ERROR,
+            osQueueWorkItem(pGpu,
+                            knvlinkUncontainedErrorRecoveryUvmIdle_WORKITEM,
+                            pInfo,
+                            (OsQueueWorkItemFlags){.bDontFreeParams = NV_TRUE}),
             fail);
 
         // Launch repeated 1Hz workitem to wait 1 STO period
@@ -2545,20 +2603,26 @@ knvlinkFatalErrorRecovery_IMPL
     {
         (void)gpuMarkDeviceForReset(pGpu);
 
-        status = osQueueWorkItemWithFlags(pGpu, knvlinkFatalErrorRecovery_WORKITEM, NULL,
-                                          (OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                                            OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RW |
-                                            OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE));
+        status = osQueueWorkItem(pGpu,
+            knvlinkFatalErrorRecovery_WORKITEM,
+            NULL,
+            (OsQueueWorkItemFlags){
+                .bLockSema = NV_TRUE,
+                .apiLock = WORKITEM_FLAGS_API_LOCK_READ_WRITE,
+                .bLockGpuGroupSubdevice = NV_TRUE});
     }
 
     return status;
 
 fail:
     NV_ASSERT_OK_OR_CAPTURE_FIRST_ERROR(status,
-        osQueueWorkItemWithFlags(pGpu, knvlinkAbortUncontainedErrorRecovery_WORKITEM, NULL,
-                                 (OS_QUEUE_WORKITEM_FLAGS_LOCK_SEMA |
-                                   OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RW |
-                                   OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE)));
+        osQueueWorkItem(pGpu,
+                        knvlinkAbortUncontainedErrorRecovery_WORKITEM,
+                        NULL,
+                        (OsQueueWorkItemFlags){
+                            .bLockSema = NV_TRUE,
+                            .apiLock = WORKITEM_FLAGS_API_LOCK_READ_WRITE,
+                            .bLockGpuGroupSubdevice = NV_TRUE}));
 
     return status;
 }
@@ -2609,6 +2673,707 @@ knvlinkExecGspRmRpc_IMPL
     }
 
     return status;
+}
+
+NvU64
+knvlinkGetBWModeEpoch_IMPL
+(
+    OBJGPU *pGpu,
+    KernelNvlink *pKernelNvlink
+)
+{
+    return (pKernelNvlink == NULL) ? 0 : portAtomicExOrU64(&pKernelNvlink->nvlinkBwModeEpoch, 0);
+}
+
+void
+knvlinkSetBWModeEpoch_IMPL
+(
+    OBJGPU *pGpu,
+    KernelNvlink *pKernelNvlink,
+    NvU64 bwModeEpoch
+)
+{
+    portAtomicExSetU64(&pKernelNvlink->nvlinkBwModeEpoch, bwModeEpoch);
+}
+
+/*!
+ * Send the NVLE key to keymgr through the GSP keymgr interface for initial key setup
+ *
+ * @param[in] pGpu              : OBJGPU pointer
+ * @param[in] pKernelNvlink     : KernelNvlink pointer
+ * @param[in] pKey              : NVLE Key
+ * @param[in] remoteScfDcfGpuId : Local CLID
+ */
+static NV_STATUS
+_knvlinkSendEncryptionKeys
+(
+    OBJGPU       *pGpu,
+    KernelNvlink *pKernelNvlink,
+    NvU8         *pKey,
+    NvU32         remoteScfDcfGpuId
+)
+{
+    NvU8                             nvleKeyReqBuf[sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE) +
+                                                   sizeof(RM_GSP_NVLE_UPDATE_SESSION_KEYS)] = {0};
+    NvU8                            *pNvleKeyReq                                            = nvleKeyReqBuf;
+    RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE  *pSpdmReqHdr                                            = NULL;
+    RM_GSP_NVLE_UPDATE_SESSION_KEYS *pGspReqHdr                                             = NULL;
+    NvU32                            nvleKeyReqSize                                         = 0;
+    RM_SPDM_NV_CMD_RSP               nvleKeyRsp                                             = {0};
+    NvU32                            nvleKeyRspSize                                         = sizeof(nvleKeyRsp);
+    ConfidentialCompute             *pConfCompute                                           = NULL;
+    Spdm                            *pSpdm                                                  = NULL;
+
+    if (pGpu == NULL || pKey == NULL)
+    {
+        return NV_ERR_INVALID_ARGUMENT;
+    }
+
+    pConfCompute = GPU_GET_CONF_COMPUTE(pGpu);
+    pSpdm        = GPU_GET_SPDM(pGpu);
+
+    if (pConfCompute == NULL || pSpdm == NULL || !pSpdm->bSessionEstablished)
+    {
+        return NV_ERR_INVALID_STATE;
+    }
+
+    // SPDM App Message header wraps the entire message for GSP
+    pSpdmReqHdr                                  = (RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE *)pNvleKeyReq;
+    pSpdmReqHdr->hdr.cmdType                     = RM_SPDM_NV_CMD_TYPE_REQ_KEYMGR_NVLE;
+
+    nvleKeyReqSize = sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE) + sizeof(RM_GSP_NVLE_UPDATE_SESSION_KEYS);
+    pGspReqHdr                                   = (RM_GSP_NVLE_UPDATE_SESSION_KEYS *)
+                                                   ((NvU8 *)pNvleKeyReq + sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE));
+
+    pGspReqHdr->cmdId                                  = RM_GSP_NVLE_CMD_ID_UPDATE_SESSION_KEYS;
+    pGspReqHdr->bForKeyRotation                        = NV_FALSE;
+    pGspReqHdr->wrappedKeyEntries[0].remoteScfDcfGpuId = remoteScfDcfGpuId;
+    pGspReqHdr->wrappedKeyEntries[0].bValid            = NV_TRUE;
+    portMemCopy(pGspReqHdr->wrappedKeyEntries[0].key, sizeof(pGspReqHdr->wrappedKeyEntries[0].key),
+                pKey, RM_GSP_NVLE_AES_256_GCM_KEY_SIZE_BYTES);
+
+    // Encrypt the key before sending.
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+              ccslEncrypt(pConfCompute->pNvleP2pWrappingCcslCtx,
+                         sizeof(pGspReqHdr->wrappedKeyEntries),
+                         (NvU8 *)pGspReqHdr->wrappedKeyEntries,
+                         NULL, 0,
+                         (NvU8 *)pGspReqHdr->wrappedKeyEntries,
+                         (NvU8 *)pGspReqHdr->keyEntriesTag));
+
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, spdmSendApplicationMessage(pGpu, pSpdm, pNvleKeyReq, nvleKeyReqSize,
+                                                                  (NvU8 *)&nvleKeyRsp, &nvleKeyRspSize));
+    if ((nvleKeyRspSize < sizeof(RM_SPDM_NV_CMD_HDR)) || (nvleKeyRspSize > sizeof(RM_SPDM_NV_CMD_RSP)))
+    {
+        // Somehow, we got an entirely invalid response
+        NV_PRINTF(LEVEL_ERROR, "NVLE response from GSP of invalid size! rspSize: 0x%x!\n", nvleKeyRspSize);
+        return NV_ERR_INVALID_DATA;
+    }
+
+    // Check for known error response or any non-success response
+    if ((nvleKeyRsp.hdr.cmdType == RM_SPDM_NV_CMD_TYPE_RSP_ERROR) &&
+        (nvleKeyRspSize         == sizeof(RM_SPDM_NV_CMD_RSP_ERROR)))
+    {
+        NV_PRINTF(LEVEL_ERROR, "GSP returned NVLE response with error code 0x%x!\n", nvleKeyRsp.error.status);
+        return (nvleKeyRsp.error.status != NV_OK) ? nvleKeyRsp.error.status : NV_ERR_INVALID_DATA;
+    }
+    else if (nvleKeyRsp.hdr.cmdType != RM_SPDM_NV_CMD_TYPE_RSP_SUCCESS ||
+             nvleKeyRspSize         != sizeof(RM_SPDM_NV_CMD_RSP_SUCCESS))
+    {
+        NV_PRINTF(LEVEL_ERROR, "Unexpected NVLE response from GSP! cmdType: 0x%x rspSize: 0x%x!\n",
+                  nvleKeyRsp.hdr.cmdType, nvleKeyRspSize);
+        return NV_ERR_INVALID_DATA;
+    }
+
+    return NV_OK;
+}
+
+/*!
+ * Send the NVLE key to keymgr through the GSP keymgr interface for key refresh
+ *
+ * @param[in] pGpu              : OBJGPU pointer
+ * @param[in] pKernelNvlink     : KernelNvlink pointer
+ * @param[in] pKey              : NVLE Key
+ * @param[in] remoteScfDcfGpuId : Local CLID
+ * @param[in] stage             : Whether Tx or Rx keyslot needs to be refreshed
+ * @param[in] epoch             : Epoch will inform which keyslot<0,1> is spare
+ */
+static NV_STATUS
+_knvlinkRefreshEncryptionKeys
+(
+    OBJGPU                 *pGpu,
+    KernelNvlink           *pKernelNvlink,
+    NvU8                   *pKey,
+    NvU32                   remoteScfDcfGpuId,
+    sessionKeyRefreshStage  stage,
+    NvU8                    epoch
+)
+{
+    NvU8                              nvleKeyReqBuf[sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE) +
+                                                    sizeof(RM_GSP_NVLE_REFRESH_SESSION_KEYS)] = {0};
+    NvU8                             *pNvleKeyReq                                             = nvleKeyReqBuf;
+    RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE   *pSpdmReqHdr                                             = NULL;
+    RM_GSP_NVLE_REFRESH_SESSION_KEYS *pGspReqHdr                                              = NULL;
+    NvU32                             nvleKeyReqSize                                          = 0;
+    RM_SPDM_NV_CMD_RSP                nvleKeyRsp                                              = {0};
+    NvU32                             nvleKeyRspSize                                          = sizeof(nvleKeyRsp);
+    ConfidentialCompute              *pConfCompute                                            = NULL;
+    Spdm                             *pSpdm                                                   = NULL;
+
+    if ((pGpu == NULL) || (pKey == NULL) || (stage > refreshTxKeySlot) || (epoch > 1))
+    {
+        return NV_ERR_INVALID_ARGUMENT;
+    }
+
+    pConfCompute = GPU_GET_CONF_COMPUTE(pGpu);
+    pSpdm        = GPU_GET_SPDM(pGpu);
+
+    if (pConfCompute == NULL || pSpdm == NULL || !pSpdm->bSessionEstablished)
+    {
+        return NV_ERR_INVALID_STATE;
+    }
+
+    // SPDM App Message header wraps the entire message for GSP
+    pSpdmReqHdr                                  = (RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE *)pNvleKeyReq;
+    pSpdmReqHdr->hdr.cmdType                     = RM_SPDM_NV_CMD_TYPE_REQ_KEYMGR_NVLE;
+
+    nvleKeyReqSize = sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE) + sizeof(RM_GSP_NVLE_REFRESH_SESSION_KEYS);
+    pGspReqHdr                                   = (RM_GSP_NVLE_REFRESH_SESSION_KEYS *)
+                                                   ((NvU8 *)pNvleKeyReq + sizeof(RM_SPDM_NV_CMD_REQ_KEYMGR_NVLE));
+
+    pGspReqHdr->cmdId                                  = RM_GSP_NVLE_CMD_ID_REFRESH_SESSION_KEYS;
+    pGspReqHdr->stage                                  = stage;
+    pGspReqHdr->wrappedKeyEntries[0].remoteScfDcfGpuId = remoteScfDcfGpuId;
+    pGspReqHdr->wrappedKeyEntries[0].bValid            = NV_TRUE;
+    pGspReqHdr->wrappedKeyEntries[0].epoch             = epoch;
+    portMemCopy(pGspReqHdr->wrappedKeyEntries[0].key, sizeof(pGspReqHdr->wrappedKeyEntries[0].key),
+                pKey, RM_GSP_NVLE_AES_256_GCM_KEY_SIZE_BYTES);
+
+    // Encrypt the key before sending.
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+              ccslEncrypt(pConfCompute->pNvleP2pWrappingCcslCtx,
+                          sizeof(pGspReqHdr->wrappedKeyEntries),
+                          (NvU8 *)pGspReqHdr->wrappedKeyEntries,
+                          NULL, 0,
+                          (NvU8 *)pGspReqHdr->wrappedKeyEntries,
+                          (NvU8 *)pGspReqHdr->keyEntriesTag));
+
+    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, spdmSendApplicationMessage(pGpu, pSpdm, pNvleKeyReq, nvleKeyReqSize,
+                                                                  (NvU8 *)&nvleKeyRsp, &nvleKeyRspSize));
+    if ((nvleKeyRspSize < sizeof(RM_SPDM_NV_CMD_HDR)) || (nvleKeyRspSize > sizeof(RM_SPDM_NV_CMD_RSP)))
+    {
+        // Somehow, we got an entirely invalid response
+        NV_PRINTF(LEVEL_ERROR, "NVLE response from GSP of invalid size! rspSize: 0x%x!\n", nvleKeyRspSize);
+        return NV_ERR_INVALID_DATA;
+    }
+
+    // Check for known error response or any non-success response
+    if ((nvleKeyRsp.hdr.cmdType == RM_SPDM_NV_CMD_TYPE_RSP_ERROR) &&
+        (nvleKeyRspSize         == sizeof(RM_SPDM_NV_CMD_RSP_ERROR)))
+    {
+        NV_PRINTF(LEVEL_ERROR, "GSP returned NVLE response with error code 0x%x!\n", nvleKeyRsp.error.status);
+        return (nvleKeyRsp.error.status != NV_OK) ? nvleKeyRsp.error.status : NV_ERR_INVALID_DATA;
+    }
+    else if (nvleKeyRsp.hdr.cmdType != RM_SPDM_NV_CMD_TYPE_RSP_SUCCESS ||
+             nvleKeyRspSize         != sizeof(RM_SPDM_NV_CMD_RSP_SUCCESS))
+    {
+        NV_PRINTF(LEVEL_ERROR, "Unexpected NVLE response from GSP! cmdType: 0x%x rspSize: 0x%x!\n",
+                  nvleKeyRsp.hdr.cmdType, nvleKeyRspSize);
+        return NV_ERR_INVALID_DATA;
+    }
+
+    return NV_OK;
+}
+
+/*!
+ * Sets up the intial NVLE key between a given pair of GPUs
+ *
+ * @param[in] pLocalGpu           : Local OBJGPU pointer
+ * @param[in] pLocalKernelNvlink  : Local KernelNvlink pointer
+ * @param[in] pRemoteGpu          : Remote OBJGPU pointer
+ * @param[in] pRemoteKernelNvlink : Remote KernelNvlink pointer
+ */
+NV_STATUS
+knvlinkSetupEncryptionKeys_IMPL
+(
+    OBJGPU       *pLocalGpu,
+    KernelNvlink *pLocalKernelNvlink,
+    OBJGPU       *pRemoteGpu,
+    KernelNvlink *pRemoteKernelNvlink
+)
+{
+    NvU8 nvleKey[RM_GSP_NVLE_AES_256_GCM_KEY_SIZE_BYTES] = {0};
+
+    NV_STATUS status     = NV_OK;
+    NvU32     localCLID  = knvlinkGetCLID(pLocalGpu, pLocalKernelNvlink);
+    NvU32     remoteCLID = knvlinkGetCLID(pRemoteGpu, pRemoteKernelNvlink);
+
+    if (!libspdm_random_bytes((NvU8 *)&nvleKey, sizeof(nvleKey)))
+    {
+        return NV_ERR_INVALID_DATA;
+    }
+
+    NV_PRINTF(LEVEL_INFO, "Setting nvle keys between GPU%d and GPU%d\n",
+              gpuGetInstance(pLocalGpu), gpuGetInstance(pRemoteGpu));
+
+    //
+    // Check if NVLE keys are already programmed, skip programming the keys if they
+    // are already setup once, key rotation will ensure that the keys are refreshed
+    // at fixed time intervals.
+    //
+    if (!pLocalKernelNvlink->bNvleKeySetup[remoteCLID] &&
+        !pRemoteKernelNvlink->bNvleKeySetup[localCLID])
+    {
+        NV_ASSERT_OK_OR_GOTO(status,
+                             _knvlinkSendEncryptionKeys(pLocalGpu,  pLocalKernelNvlink,
+                                                        nvleKey, remoteCLID), ErrorExit);
+        NV_ASSERT_OK_OR_GOTO(status,
+                             _knvlinkSendEncryptionKeys(pRemoteGpu, pRemoteKernelNvlink,
+                                                        nvleKey,  localCLID), ErrorExit);
+
+        pLocalKernelNvlink->bNvleKeySetup[remoteCLID] = NV_TRUE;
+        pRemoteKernelNvlink->bNvleKeySetup[localCLID] = NV_TRUE;
+    }
+
+ErrorExit:
+    // Always be sure to scrub P2P key regardless of success
+    portMemSet((NvU8 *)&nvleKey, 0, sizeof(nvleKey));
+
+    return status;
+}
+
+/*!
+ * Refresh the NVLE keys between a given pair of GPUs
+ *
+ * @param[in] pLocalGpu           : Local OBJGPU pointer
+ * @param[in] pLocalKernelNvlink  : Local KernelNvlink pointer
+ * @param[in] pRemoteGpu          : Remote OBJGPU pointer
+ * @param[in] pRemoteKernelNvlink : Remote KernelNvlink pointer
+ * @param[in] stage               : Whether Tx or Rx keyslot needs to be refreshed
+ * @param[in] epoch               : Epoch will inform which keyslot<0,1> is spare
+ */
+NV_STATUS
+knvlinkRotateEncryptionKeys_IMPL
+(
+    OBJGPU                 *pLocalGpu,
+    KernelNvlink           *pLocalKernelNvlink,
+    OBJGPU                 *pRemoteGpu,
+    KernelNvlink           *pRemoteKernelNvlink,
+    sessionKeyRefreshStage  stage,
+    NvU8                    epoch
+)
+{
+    NvU8 nvleKey[RM_GSP_NVLE_AES_256_GCM_KEY_SIZE_BYTES] = {0};
+
+    NV_STATUS status     = NV_OK;
+    NvU32     localCLID  = knvlinkGetCLID(pLocalGpu, pLocalKernelNvlink);
+    NvU32     remoteCLID = knvlinkGetCLID(pRemoteGpu, pRemoteKernelNvlink);
+
+    // TODO: Check that the NVLE key setup stage has completed
+
+    if (!libspdm_random_bytes((NvU8 *)&nvleKey, sizeof(nvleKey)))
+    {
+        return NV_ERR_INVALID_DATA;
+    }
+
+    // For the transfer direction pLocalGpu->pRemoteGpu, update the new key for Tx or Rx as requested
+    NV_ASSERT_OK_OR_GOTO(status,
+        _knvlinkRefreshEncryptionKeys(pLocalGpu,  pLocalKernelNvlink,
+                                      nvleKey, remoteCLID, stage, epoch), ErrorExit);
+
+    // For the transfer direction pRemoteGpu->pLocalGpu, update the new key for Tx or Rx as requested
+    NV_ASSERT_OK_OR_GOTO(status,
+        _knvlinkRefreshEncryptionKeys(pRemoteGpu, pRemoteKernelNvlink,
+                                      nvleKey, localCLID,  stage, epoch), ErrorExit);
+
+ErrorExit:
+    // Always be sure to scrub NVLE key regardless of success
+    portMemSet((NvU8 *)&nvleKey, 0, sizeof(nvleKey));
+
+    return status;
+}
+
+/*!
+ * Clears the NVLE key between this GPU and all remote GPUs
+ *
+ * @param[in] pGpu           : OBJGPU pointer
+ * @param[in] pKernelNvlink  : KernelNvlink pointer
+ */
+NV_STATUS
+knvlinkClearEncryptionKeys_IMPL
+(
+    OBJGPU       *pGpu,
+    KernelNvlink *pKernelNvlink
+)
+{
+    NvU32 gpuInst;
+
+    if (pKernelNvlink->getProperty(pKernelNvlink, PDB_PROP_KNVLINK_ENCRYPTION_ENABLED))
+    {
+        NvU32 localCLID = knvlinkGetCLID(pGpu, pKernelNvlink);
+        for (gpuInst = 0; gpuInst < NV_MAX_DEVICES; gpuInst++)
+        {
+            OBJGPU *pRemoteGpu = gpumgrGetGpu(gpuInst);
+            if (!API_GPU_IN_RESET_SANITY_CHECK(pRemoteGpu))
+            {
+                KernelNvlink *pRemoteKernelNvlink = GPU_GET_KERNEL_NVLINK(pRemoteGpu);
+                if ((pRemoteKernelNvlink != NULL) &&
+                    pRemoteKernelNvlink->getProperty(pRemoteKernelNvlink, PDB_PROP_KNVLINK_ENCRYPTION_ENABLED))
+                {
+                    NvU32 remoteCLID = knvlinkGetCLID(pRemoteGpu, pRemoteKernelNvlink);
+
+                    pKernelNvlink->bNvleKeySetup[remoteCLID]      = NV_FALSE;
+                    pRemoteKernelNvlink->bNvleKeySetup[localCLID] = NV_FALSE;
+                }
+            }
+        }
+    }
+
+    return NV_OK;
+}
+
+NvBool
+knvlinkIsNvleKeyRefreshEnabled_IMPL
+(
+    OBJGPU       *pGpu,
+    KernelNvlink *pKernelNvlink
+)
+{
+    // Disable NVLE key refresh when Nvlink Encryption is disabled
+    if (knvlinkIsNvleEnabled_HAL(pGpu, pKernelNvlink) == NV_FALSE)
+    {
+        pKernelNvlink->bNvleKeyRefreshEnabled = NV_FALSE;
+    }
+
+    return pKernelNvlink->bNvleKeyRefreshEnabled;
+}
+
+/*!
+ * Validate the remap table slots between given pair of GPUs
+ *
+ * @param[in] pLocalGpu           : Local OBJGPU pointer
+ * @param[in] pLocalKernelNvlink  : Local KernelNvlink pointer
+ * @param[in] pRemoteGpu          : Remote OBJGPU pointer
+ * @param[in] pRemoteKernelNvlink : Remote KernelNvlink pointer
+ */
+NV_STATUS
+knvlinkValidateRemapTableSlots_IMPL
+(
+    OBJGPU       *pLocalGpu,
+    KernelNvlink *pLocalKernelNvlink,
+    OBJGPU       *pRemoteGpu,
+    KernelNvlink *pRemoteKernelNvlink
+)
+{
+    ConfidentialCompute *pCC = NULL;
+    NvBool bCCFeatureEnabled = NV_FALSE;
+
+    pCC               = GPU_GET_CONF_COMPUTE(pLocalGpu);
+    bCCFeatureEnabled = (pCC != NULL) && pCC->getProperty(pCC, PDB_PROP_CONFCOMPUTE_ENABLED);
+
+    // No validation needed if CC or NVLE is disabled
+    if (!bCCFeatureEnabled ||
+        !pLocalKernelNvlink->getProperty(pLocalKernelNvlink, PDB_PROP_KNVLINK_ENCRYPTION_ENABLED))
+    {
+        return NV_OK;
+    }
+
+    pCC               = GPU_GET_CONF_COMPUTE(pRemoteGpu);
+    bCCFeatureEnabled = (pCC != NULL) && pCC->getProperty(pCC, PDB_PROP_CONFCOMPUTE_ENABLED);
+
+    // No validation needed if CC or NVLE is disabled
+    if (!bCCFeatureEnabled ||
+        !pRemoteKernelNvlink->getProperty(pRemoteKernelNvlink, PDB_PROP_KNVLINK_ENCRYPTION_ENABLED))
+    {
+        return NV_OK;
+    }
+
+    // Validate the cached mapslots
+    NvU32 remapTableIdx;
+    for (remapTableIdx = 0; remapTableIdx < NV2080_CTRL_NVLINK_MAX_REMAP_TABLE_ENTRIES; remapTableIdx++)
+    {
+        if (pLocalKernelNvlink->flaRemapTabAddr[remapTableIdx] != pRemoteKernelNvlink->flaRemapTabAddr[remapTableIdx])
+        {
+            NV_PRINTF(LEVEL_ERROR, "FLA Remap table validation failed for table index = 0x%x\n", remapTableIdx);
+            return NV_ERR_INVALID_STATE;
+        }
+
+        if (pLocalKernelNvlink->gpaRemapTabAddr[remapTableIdx] != pRemoteKernelNvlink->gpaRemapTabAddr[remapTableIdx])
+        {
+            NV_PRINTF(LEVEL_ERROR, "GPA Remap table validation failed for table index = 0x%x\n", remapTableIdx);
+            return NV_ERR_INVALID_STATE;
+        }
+    }
+
+    return NV_OK;
+}
+
+/*!
+ * Update the nvlink topology with LID information for NVLE. Then validate the remap
+ * table and lock it to prevent MSE from from making any nvlink config updates.
+ *
+ * @param[in] pGpu           : OBJGPU pointer
+ * @param[in] pKernelNvlink  : KernelNvlink pointer
+ */
+NV_STATUS
+knvlinkSetupNvleRemapTables_IMPL
+(
+    OBJGPU       *pGpu,
+    KernelNvlink *pKernelNvlink
+)
+{
+    NV_STATUS     status         = NV_OK;
+    OBJGPU       *pGpu0          = NULL;
+    KernelNvlink *pKernelNvlink0 = NULL;
+    NvU32         gpuInst0;
+
+    OBJGPU       *pGpu1          = NULL;
+    KernelNvlink *pKernelNvlink1 = NULL;
+    NvU32         gpuInst1;
+
+    // Return if NVLE is not enabled for the GPU
+    if (!pKernelNvlink->getProperty(pKernelNvlink, PDB_PROP_KNVLINK_ENCRYPTION_ENABLED))
+    {
+        return NV_OK;
+    }
+
+    // Return if NVLE identifiers are already retrieved and remap tables are updated
+    if (pKernelNvlink->bGotNvleIdentifiers)
+    {
+        return NV_OK;
+    }
+
+    // Return if probe response if not received on all the GPUs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            //
+            // If one of the GPUs haven't received the probe response, return, LID programming can only
+            // be done when all GPUs have received the probe response
+            //
+            if (pGpu0->pGpuFabricProbeInfoKernel && !gpuFabricProbeIsReceived(pGpu0->pGpuFabricProbeInfoKernel))
+            {
+                return NV_OK;
+            }
+
+            //
+            // If MSE and remap tables are locked for one of the GPUs, then it should have been locked for all GPUs,
+            // since we lock them for all the GPUs together
+            //
+            if (pKernelNvlink0->bRemapTableMseLocked)
+            {
+                return NV_OK;
+            }
+        }
+    }
+
+    // All the GPUs have received the probe response, parse the FLA remap table and assign the CLIDs for the ALIDs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                  knvlinkEncryptionGetUpdateGpuIdentifiers_HAL(pGpu0, pKernelNvlink0, NV_FALSE, NV_TRUE));
+        }
+    }
+
+    // All the GPUs have received the probe response, parse the GPA remap table and assign the CLIDs for the ALIDs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                  knvlinkEncryptionGetUpdateGpuIdentifiers_HAL(pGpu0, pKernelNvlink0, NV_TRUE, NV_TRUE));
+        }
+    }
+
+    // All the GPUs have received the probe response, update the CLIDs in the FLA remap table of all the GPUs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                  knvlinkEncryptionGetUpdateGpuIdentifiers_HAL(pGpu0, pKernelNvlink0, NV_FALSE, NV_FALSE));
+        }
+    }
+
+    // All the GPUs have received the probe response, update the CLIDs in the GPA remap table of all the GPUs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                  knvlinkEncryptionGetUpdateGpuIdentifiers_HAL(pGpu0, pKernelNvlink0, NV_TRUE, NV_FALSE));
+
+            // All NVLE identifiers are retrieved and updated by this time
+            pKernelNvlink0->bGotNvleIdentifiers = NV_TRUE;
+        }
+    }
+
+    // All the GPUs have retrieved and updated the ALIDs and CLIDs. Update NVLE topology information for all possible P2P pairs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            for (gpuInst1 = gpuInst0+1; gpuInst1 < NV_MAX_DEVICES; gpuInst1++)
+            {
+                pGpu1 = gpumgrGetGpu(gpuInst1);
+                if (pGpu1 && (gpuIsStateLoaded(pGpu1) || gpuIsStateLoading(pGpu1)))
+                {
+                    pKernelNvlink1 = GPU_GET_KERNEL_NVLINK(pGpu1);
+                    if (pKernelNvlink1 == NULL)
+                    {
+                        continue;
+                    }
+
+                    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                          knvlinkEncryptionUpdateTopology_HAL(pGpu0, pKernelNvlink0,
+                                                                              pGpu1, pKernelNvlink1));
+                    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                          knvlinkEncryptionUpdateTopology_HAL(pGpu1, pKernelNvlink1,
+                                                                              pGpu0, pKernelNvlink0));
+                }
+            }
+        }
+    }
+
+    // NVLE topology should have been updated for the GPUs. Generate and setup the NVLE keys for all the possible P2P pairs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            for (gpuInst1 = gpuInst0+1; gpuInst1 < NV_MAX_DEVICES; gpuInst1++)
+            {
+                pGpu1 = gpumgrGetGpu(gpuInst1);
+                if (pGpu1 && (gpuIsStateLoaded(pGpu1) || gpuIsStateLoading(pGpu1)))
+                {
+                    pKernelNvlink1 = GPU_GET_KERNEL_NVLINK(pGpu1);
+                    if (pKernelNvlink1 == NULL)
+                    {
+                        continue;
+                    }
+
+                    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                          knvlinkSetupEncryptionKeys(pGpu0, pKernelNvlink0, pGpu1, pKernelNvlink1));
+                }
+            }
+        }
+    }
+
+    // Validate remap table slots for all the GPUs
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL)
+            {
+                continue;
+            }
+
+            for (gpuInst1 = gpuInst0+1; gpuInst1 < NV_MAX_DEVICES; gpuInst1++)
+            {
+                pGpu1 = gpumgrGetGpu(gpuInst1);
+                if (pGpu1 && (gpuIsStateLoaded(pGpu1) || gpuIsStateLoading(pGpu1)))
+                {
+                    pKernelNvlink1 = GPU_GET_KERNEL_NVLINK(pGpu1);
+                    if (pKernelNvlink1 == NULL)
+                    {
+                        continue;
+                    }
+            
+                    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                                          knvlinkValidateRemapTableSlots(pGpu0, pKernelNvlink0, pGpu1, pKernelNvlink1));
+                }
+            }
+        }
+    }
+
+    for (gpuInst0 = 0; gpuInst0 < NV_MAX_DEVICES; gpuInst0++)
+    {
+        pGpu0 = gpumgrGetGpu(gpuInst0);
+        if (pGpu0 && (gpuIsStateLoaded(pGpu0) || gpuIsStateLoading(pGpu0)))
+        {
+            pKernelNvlink0 = GPU_GET_KERNEL_NVLINK(pGpu0);
+            if (pKernelNvlink0 == NULL || pKernelNvlink0->bRemapTableMseLocked)
+            {
+                continue;
+            }
+
+            NV2080_CTRL_INTERNAL_NVLINK_LOCK_REMAP_TABLE_AND_MSE_PARAMS params;
+            portMemSet(&params, 0, sizeof(params));
+            params.linkMask = KNVLINK_BITVECTOR_TO_MASK(pKernelNvlink0, enabledLinks, 64);
+
+            // Lock remap tables and MSE from making any further changes to the nvlink topology
+            status = knvlinkExecGspRmRpc(pGpu0, pKernelNvlink0,
+                                         NV2080_CTRL_CMD_INTERNAL_NVLINK_LOCK_REMAP_TABLE_AND_MSE,
+                                         (void *)&params, sizeof(params));
+            if (status != NV_OK)
+            {
+                NV_PRINTF(LEVEL_ERROR, "GPU%d Failed to lock remap table and MSE\n",
+                          gpuGetInstance(pGpu0));
+                return status;
+            }
+
+            // DEBUG_ONLY
+            NV_PRINTF(LEVEL_ERROR, "GPU%d Successfully locked remap table and MSE\n",
+                      gpuGetInstance(pGpu0));
+            pKernelNvlink0->bRemapTableMseLocked = NV_TRUE;
+        }
+    }
+
+    return NV_OK;
 }
 
 void

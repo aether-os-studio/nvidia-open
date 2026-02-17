@@ -80,6 +80,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__PrereqTracker =
     /*pExportEntries=*/  0
 };
 
+void __nvoc_prereqDestruct(PrereqTracker*);
 void __nvoc_dtor_Object(Object*);
 void __nvoc_dtor_PrereqTracker(PrereqTracker *pThis) {
     __nvoc_prereqDestruct(pThis);
@@ -139,16 +140,25 @@ void __nvoc_init__PrereqTracker(PrereqTracker *pThis) {
     __nvoc_init_funcTable_PrereqTracker(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_PrereqTracker(PrereqTracker **ppThis, Dynamic *pParent, NvU32 createFlags, struct OBJGPU * arg_pParent)
+NV_STATUS __nvoc_objCreate_PrereqTracker(PrereqTracker **ppThis, Dynamic *pParent, NvU32 createFlags, struct OBJGPU *arg_pParent)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     PrereqTracker *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(PrereqTracker), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(PrereqTracker));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(PrereqTracker));
@@ -166,6 +176,7 @@ NV_STATUS __nvoc_objCreate_PrereqTracker(PrereqTracker **ppThis, Dynamic *pParen
         pThis->__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__PrereqTracker(pThis);
     status = __nvoc_ctor_PrereqTracker(pThis, arg_pParent);
     if (status != NV_OK) goto __nvoc_objCreate_PrereqTracker_cleanup;
@@ -173,30 +184,34 @@ NV_STATUS __nvoc_objCreate_PrereqTracker(PrereqTracker **ppThis, Dynamic *pParen
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_PrereqTracker_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(PrereqTracker));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_PrereqTracker(PrereqTracker **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    struct OBJGPU * arg_pParent = va_arg(args, struct OBJGPU *);
+    struct OBJGPU *arg_pParent = va_arg(args, struct OBJGPU *);
 
     status = __nvoc_objCreate_PrereqTracker(ppThis, pParent, createFlags, arg_pParent);
 

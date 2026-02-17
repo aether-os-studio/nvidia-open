@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2014-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -264,7 +264,6 @@ enum NvKmsIoctlCommand {
     NVKMS_IOCTL_RELEASE_SWAP_GROUP,
     NVKMS_IOCTL_SWITCH_MUX,
     NVKMS_IOCTL_GET_MUX_STATE,
-    NVKMS_IOCTL_EXPORT_VRR_SEMAPHORE_SURFACE,
     NVKMS_IOCTL_ENABLE_VBLANK_SYNC_OBJECT,
     NVKMS_IOCTL_DISABLE_VBLANK_SYNC_OBJECT,
     NVKMS_IOCTL_NOTIFY_VBLANK,
@@ -272,7 +271,6 @@ enum NvKmsIoctlCommand {
     NVKMS_IOCTL_ENABLE_VBLANK_SEM_CONTROL,
     NVKMS_IOCTL_DISABLE_VBLANK_SEM_CONTROL,
     NVKMS_IOCTL_ACCEL_VBLANK_SEM_CONTROLS,
-    NVKMS_IOCTL_VRR_SIGNAL_SEMAPHORE,
     NVKMS_IOCTL_FRAMEBUFFER_CONSOLE_DISABLED,
 };
 
@@ -297,9 +295,6 @@ enum NvKmsIoctlCommand {
 #define NVKMS_GUID_SIZE                                               16
 #define NVKMS_3DVISION_DONGLE_PARAM_BYTES                             20
 #define NVKMS_GPU_STRING_SIZE                                         80
-
-#define NVKMS_VRR_SEMAPHORE_SURFACE_COUNT                             256
-#define NVKMS_VRR_SEMAPHORE_SURFACE_SIZE                              (sizeof(NvU32) * NVKMS_VRR_SEMAPHORE_SURFACE_COUNT)
 
 /*
  * The GUID string has the form:
@@ -362,6 +357,7 @@ enum NvKmsModeValidationOverrides {
     NVKMS_MODE_VALIDATION_ALLOW_DP_INTERLACED                = (1 << 17),
     NVKMS_MODE_VALIDATION_NO_INTERLACED_MODES                = (1 << 18),
     NVKMS_MODE_VALIDATION_MAX_ONE_HARDWARE_HEAD              = (1 << 19),
+    NVKMS_MODE_VALIDATION_PREFER_HDMI_FRL_MODE               = (1 << 20),
 };
 
 /*!
@@ -1155,8 +1151,6 @@ struct NvKmsAllocDeviceReply {
      * IMPLEMENTATION NOTE: this is the portion of DispHalRec::caps
      * that can vary between EVO classes.
      */
-    NvBool requiresVrrSemaphores;
-    NvBool inputLutAppliesToBase;
 
     /*!
      * Whether the client can allocate and manipulate SwapGroup objects via
@@ -1168,13 +1162,6 @@ struct NvKmsAllocDeviceReply {
      * Whether NVKMS supports Warp and Blend on this device.
      */
     NvBool supportsWarpAndBlend;
-
-    /*!
-     * When nIsoSurfacesInVidmemOnly=TRUE, then only video memory
-     * surfaces can be used for the surface in
-     * NvKmsCompletionNotifierDescription or NvKmsSemaphore.
-     */
-    NvBool nIsoSurfacesInVidmemOnly;
 
     /*
      * When requiresAllAllocationsInSysmem=TRUE, then all memory allocations
@@ -1278,18 +1265,6 @@ struct NvKmsAllocDeviceReply {
      * is supported.
      */
     NvBool supportsVblankSemControl;
-
-    /*!
-     * 'supportsInputColorSpace' indicates whether the HW supports setting the
-     * input color space.
-     */
-    NvBool supportsInputColorSpace;
-
-    /*!
-     * 'supportsInputColorRange' indicates whether the HW supports setting the
-     * input color range.
-     */
-    NvBool supportsInputColorRange;
 
     /*! framebuffer console base address and size. */
     NvU64 vtFbBaseAddress;
@@ -2335,16 +2310,6 @@ enum NvKmsVrrFlipType {
 
 struct NvKmsFlipReply {
     /*!
-     * If vrrFlipType != NV_KMS_VRR_FLIP_NON_VRR, then VRR was used for the
-     * requested flip. In this case, vrrSemaphoreIndex indicates the index
-     * into the VRR semaphore surface that the client should release to
-     * trigger the flip.
-     *
-     * A value of -1 indicates that no VRR semaphore release is needed.
-     */
-    NvS32 vrrSemaphoreIndex;
-
-    /*!
      * Indicates whether the flip was non-VRR, was a VRR flip on one or more
      * G-SYNC displays, or was a VRR flip exclusively on Adaptive-Sync
      * displays.
@@ -2708,9 +2673,6 @@ enum NvKmsDpyAttribute {
     NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_MODE,
     NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH,
     NV_KMS_DPY_ATTRIBUTE_DIGITAL_VIBRANCE,
-    NV_KMS_DPY_ATTRIBUTE_IMAGE_SHARPENING,
-    NV_KMS_DPY_ATTRIBUTE_IMAGE_SHARPENING_AVAILABLE,
-    NV_KMS_DPY_ATTRIBUTE_IMAGE_SHARPENING_DEFAULT,
     NV_KMS_DPY_ATTRIBUTE_REQUESTED_COLOR_SPACE,
     NV_KMS_DPY_ATTRIBUTE_CURRENT_COLOR_SPACE,
     NV_KMS_DPY_ATTRIBUTE_REQUESTED_COLOR_RANGE,
@@ -2720,6 +2682,7 @@ enum NvKmsDpyAttribute {
     NV_KMS_DPY_ATTRIBUTE_DIGITAL_LINK_TYPE,
     NV_KMS_DPY_ATTRIBUTE_DISPLAYPORT_LINK_RATE,
     NV_KMS_DPY_ATTRIBUTE_DISPLAYPORT_LINK_RATE_10MHZ,
+    NV_KMS_DPY_ATTRIBUTE_DISPLAYPORT_FORCE_ENABLE_FEC,
     NV_KMS_DPY_ATTRIBUTE_FRAMELOCK_DISPLAY_CONFIG,
     /*
      * XXX NVKMS TODO: Delete UPDATE_GLS_FRAMELOCK; this event-only
@@ -2772,6 +2735,7 @@ enum NvKmsDpyAttributeRequestedDitheringDepthValue {
     NV_KMS_DPY_ATTRIBUTE_REQUESTED_DITHERING_DEPTH_AUTO = 0,
     NV_KMS_DPY_ATTRIBUTE_REQUESTED_DITHERING_DEPTH_6_BITS = 1,
     NV_KMS_DPY_ATTRIBUTE_REQUESTED_DITHERING_DEPTH_8_BITS = 2,
+    NV_KMS_DPY_ATTRIBUTE_REQUESTED_DITHERING_DEPTH_10_BITS = 3,
 };
 
 /*! Values for the NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH attribute. */
@@ -2779,6 +2743,7 @@ enum NvKmsDpyAttributeCurrentDitheringDepthValue {
     NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH_NONE = 0,
     NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH_6_BITS = 1,
     NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH_8_BITS = 2,
+    NV_KMS_DPY_ATTRIBUTE_CURRENT_DITHERING_DEPTH_10_BITS = 3,
 };
 
 /*! Values for the NV_KMS_DPY_ATTRIBUTE_CURRENT_COLOR_SPACE attribute. */
@@ -2815,8 +2780,6 @@ enum NvKmsDpyAttributeFrameLockDisplayConfigValue {
 /*! Values for the NV_KMS_DPY_ATTRIBUTE_DPMS attribute. */
 enum NvKmsDpyAttributeDpmsValue {
     NV_KMS_DPY_ATTRIBUTE_DPMS_ON,
-    NV_KMS_DPY_ATTRIBUTE_DPMS_STANDBY,
-    NV_KMS_DPY_ATTRIBUTE_DPMS_SUSPEND,
     NV_KMS_DPY_ATTRIBUTE_DPMS_OFF,
 };
 
@@ -4102,28 +4065,6 @@ struct NvKmsGetMuxStateParams {
 };
 
 /*!
- * NVKMS_IOCTL_EXPORT_VRR_SEMAPHORE_SURFACE:
- *
- * Export the VRR semaphore surface onto the provided RM 'memFd'.
- * The RM memory FD should be "empty".  An empty FD can be allocated by calling
- * NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TO_FD with 'EMPTY_FD' set.
- */
-
-struct NvKmsExportVrrSemaphoreSurfaceRequest {
-    NvKmsDeviceHandle deviceHandle;
-    int memFd;
-};
-
-struct NvKmsExportVrrSemaphoreSurfaceReply {
-    NvU32 padding;
-};
-
-struct NvKmsExportVrrSemaphoreSurfaceParams {
-    struct NvKmsExportVrrSemaphoreSurfaceRequest request;
-    struct NvKmsExportVrrSemaphoreSurfaceReply reply;
-};
-
-/*!
  * NVKMS_IOCTL_ENABLE_VBLANK_SYNC_OBJECT:
  * NVKMS_IOCTL_DISABLE_VBLANK_SYNC_OBJECT:
  *
@@ -4386,27 +4327,6 @@ struct NvKmsAccelVblankSemControlsReply {
 struct NvKmsAccelVblankSemControlsParams {
     struct NvKmsAccelVblankSemControlsRequest request;
     struct NvKmsAccelVblankSemControlsReply reply;
-};
-
-/*!
- * NVKMS_IOCTL_VRR_SIGNAL_SEMAPHORE
- *
- * This IOCTL is used to signal a semaphore from VRR semaphore surface.
- * It should be invoked after flip if needed. If device does not supports
- * VRR semaphores, then this is a no-op action for compatibility.
- */
-struct NvKmsVrrSignalSemaphoreRequest {
-    NvKmsDeviceHandle deviceHandle;
-    NvS32 vrrSemaphoreIndex;
-};
-
-struct NvKmsVrrSignalSemaphoreReply {
-    NvU32 padding;
-};
-
-struct NvKmsVrrSignalSemaphoreParams {
-    struct NvKmsVrrSignalSemaphoreRequest request; /*! in */
-    struct NvKmsVrrSignalSemaphoreReply reply;     /*! out */
 };
 
 /*

@@ -121,7 +121,7 @@ typedef struct {
     NvU8     engine_type;
     NvU8     engine_id;
     NvU16    codec_id;
-    NvU32    reserved1;
+    NvU32    sessionInfo;
 } VIDEO_ENGINE_EVENT__SESSION_START;
 
 typedef struct {
@@ -187,6 +187,10 @@ typedef struct
     NvU32 reserved;
 
 } VIDEO_ENGINE_EVENT__RECORD;
+
+
+#define NV_VIDEO_ENGINE_EVENT_SESSION_INFO_LOW_LATENCY_NODE         0:0
+#define NV_VIDEO_ENGINE_EVENT_SESSION_INFO_LOW_LATENCY_NODE_TRUE      1 
 
 #define VIDEO_ENGINE_EVENT__LOG_DATA_SIZE(s) (sizeof(VIDEO_ENGINE_EVENT__RECORD) + s.event_log_data.size)
 

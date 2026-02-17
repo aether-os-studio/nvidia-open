@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2015-2024 NVIDIA Corporation
+    Copyright (c) 2015-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -43,6 +43,10 @@
 #include "clc369.h" // MMU_FAULT_BUFFER
 #include "clc36f.h"
 #include "clc3b5.h"
+
+// TURING_*
+#include "clc46f.h"
+#include "clc5b5.h"
 
 // AMPERE_*
 #include "clc56f.h"
@@ -1783,9 +1787,14 @@ static NV_STATUS entry_test_page_size_volta(uvm_gpu_t *gpu, size_t page_size)
     return entry_test_page_size_pascal(gpu, page_size);
 }
 
-static NV_STATUS entry_test_page_size_ampere(uvm_gpu_t *gpu, size_t page_size)
+static NV_STATUS entry_test_page_size_turing(uvm_gpu_t *gpu, size_t page_size)
 {
     return entry_test_page_size_volta(gpu, page_size);
+}
+
+static NV_STATUS entry_test_page_size_ampere(uvm_gpu_t *gpu, size_t page_size)
+{
+    return entry_test_page_size_turing(gpu, page_size);
 }
 
 static NV_STATUS entry_test_page_size_hopper(uvm_gpu_t *gpu, size_t page_size)
@@ -1810,11 +1819,13 @@ typedef NV_STATUS (*entry_test_page_size_func)(uvm_gpu_t *gpu, size_t page_size)
 
 static NV_STATUS entry_test_maxwell(uvm_gpu_t *gpu)
 {
+    NV_STATUS status = NV_OK;
     static const NvU64 big_page_sizes[] = {UVM_PAGE_SIZE_64K, UVM_PAGE_SIZE_128K};
     NvU64 pde_bits;
     uvm_mmu_page_table_alloc_t *phys_allocs[2];
     uvm_mmu_page_table_alloc_t alloc_sys = fake_table_alloc(UVM_APERTURE_SYS, 0x9999999000LL);
     uvm_mmu_page_table_alloc_t alloc_vid = fake_table_alloc(UVM_APERTURE_VID, 0x1BBBBBB000LL);
+    uvm_page_tree_t tree;
     uvm_mmu_mode_hal_t *hal;
     uvm_page_directory_t dir;
     NvU64 big_page_size, page_size;
@@ -1895,19 +1906,30 @@ static NV_STATUS entry_test_maxwell(uvm_gpu_t *gpu)
                                      0x1BBBBBB000LL,
                                      UVM_PROT_READ_ONLY,
                                      UVM_MMU_PTE_FLAGS_CACHED) == 0x80000002FBBBBBB5LL);
+
+        TEST_NV_CHECK_RET(test_page_tree_init(gpu, big_page_size, &tree));
+        TEST_CHECK_GOTO(tree.hal->poisoned_pte(&tree) == 0x800000011bad0007ull, cleanup_tree);
+        uvm_page_tree_deinit(&tree);
     }
 
     return NV_OK;
+
+cleanup_tree:
+    uvm_page_tree_deinit(&tree);
+
+    return status;
 }
 
 static NV_STATUS entry_test_pascal(uvm_gpu_t *gpu, entry_test_page_size_func entry_test_page_size)
 {
+    NV_STATUS status = NV_OK;
     NvU64 page_sizes[MAX_NUM_PAGE_SIZES];
     NvU64 pde_bits[2];
     size_t i, num_page_sizes;
     uvm_mmu_page_table_alloc_t *phys_allocs[2] = {NULL, NULL};
     uvm_mmu_page_table_alloc_t alloc_sys = fake_table_alloc(UVM_APERTURE_SYS, 0x399999999999000LL);
     uvm_mmu_page_table_alloc_t alloc_vid = fake_table_alloc(UVM_APERTURE_VID, 0x1BBBBBB000LL);
+    uvm_page_tree_t tree;
     uvm_page_directory_t dir;
 
     // big versions have [11:8] set as well to test the page table merging
@@ -1993,7 +2015,16 @@ static NV_STATUS entry_test_pascal(uvm_gpu_t *gpu, entry_test_page_size_func ent
     for (i = 0; i < num_page_sizes; i++)
         TEST_NV_CHECK_RET(entry_test_page_size(gpu, page_sizes[i]));
 
+    TEST_NV_CHECK_RET(test_page_tree_init(gpu, UVM_PAGE_SIZE_64K, &tree));
+    TEST_CHECK_GOTO(tree.hal->poisoned_pte(&tree) == 0x1bad000e9ull, cleanup_tree);
+    uvm_page_tree_deinit(&tree);
+
     return NV_OK;
+
+cleanup_tree:
+    uvm_page_tree_deinit(&tree);
+
+    return status;
 }
 
 static NV_STATUS entry_test_volta(uvm_gpu_t *gpu, entry_test_page_size_func entry_test_page_size)
@@ -2070,6 +2101,30 @@ static NV_STATUS entry_test_volta(uvm_gpu_t *gpu, entry_test_page_size_func entr
     return NV_OK;
 }
 
+static NV_STATUS entry_test_turing(uvm_gpu_t *gpu, entry_test_page_size_func entry_test_page_size)
+{
+    NV_STATUS status = NV_OK;
+    uvm_page_tree_t tree;
+    NvU64 page_sizes[MAX_NUM_PAGE_SIZES];
+    NvU32 i, num_page_sizes;
+
+    num_page_sizes = get_page_sizes(gpu, page_sizes);
+
+    for (i = 0; i < num_page_sizes; i++)
+        TEST_NV_CHECK_RET(entry_test_page_size(gpu, page_sizes[i]));
+
+    TEST_NV_CHECK_RET(test_page_tree_init(gpu, UVM_PAGE_SIZE_64K, &tree));
+    TEST_CHECK_GOTO(tree.hal->poisoned_pte(&tree) == 0x6000001bad000e9ull, cleanup_tree);
+    uvm_page_tree_deinit(&tree);
+
+    return NV_OK;
+
+cleanup_tree:
+    uvm_page_tree_deinit(&tree);
+
+    return status;
+}
+
 static NV_STATUS entry_test_ampere(uvm_gpu_t *gpu, entry_test_page_size_func entry_test_page_size)
 {
     NvU64 page_sizes[MAX_NUM_PAGE_SIZES];
@@ -2093,6 +2148,7 @@ static NV_STATUS entry_test_hopper(uvm_gpu_t *gpu, entry_test_page_size_func ent
     uvm_mmu_page_table_alloc_t *phys_allocs[2] = {NULL, NULL};
     uvm_mmu_page_table_alloc_t alloc_sys = fake_table_alloc(UVM_APERTURE_SYS, 0x9999999999000LL);
     uvm_mmu_page_table_alloc_t alloc_vid = fake_table_alloc(UVM_APERTURE_VID, 0xBBBBBBB000LL);
+    uvm_page_tree_t tree;
 
     // Big versions have [11:8] set as well to test the page table merging
     uvm_mmu_page_table_alloc_t alloc_big_sys = fake_table_alloc(UVM_APERTURE_SYS, 0x9999999999900LL);
@@ -2101,6 +2157,7 @@ static NV_STATUS entry_test_hopper(uvm_gpu_t *gpu, entry_test_page_size_func ent
     uvm_mmu_mode_hal_t *hal = gpu->parent->arch_hal->mmu_mode_hal(UVM_PAGE_SIZE_64K);
 
     memset(dirs, 0, sizeof(dirs));
+
     // Fake directory tree.
     for (i = 0; i < ARRAY_SIZE(dirs); i++) {
         dirs[i] = uvm_kvmalloc_zero(sizeof(uvm_page_directory_t) + sizeof(dirs[i]->entries[0]) * 512);
@@ -2272,10 +2329,19 @@ static NV_STATUS entry_test_hopper(uvm_gpu_t *gpu, entry_test_page_size_func ent
     // sked reflected
     TEST_CHECK_GOTO(hal->make_sked_reflected_pte() == 0xF0F, cleanup);
 
+    // poisoned - use a fake tree as it is required by poisoned_pte's MMU HAL.
+    // The tests above manually set the MMU HAL but used functions that don't
+    // have a uvm_page_tree_t argument.
+    TEST_NV_CHECK_GOTO(test_page_tree_init(gpu, UVM_PAGE_SIZE_64K, &tree), cleanup);
+    TEST_CHECK_GOTO(tree.hal->poisoned_pte(&tree) == 0x2bad0006f9ull, cleanup_tree);
+
     num_page_sizes = get_page_sizes(gpu, page_sizes);
 
     for (i = 0; i < num_page_sizes; i++)
-        TEST_NV_CHECK_GOTO(entry_test_page_size(gpu, page_sizes[i]), cleanup);
+        TEST_NV_CHECK_GOTO(entry_test_page_size(gpu, page_sizes[i]), cleanup_tree);
+
+cleanup_tree:
+    uvm_page_tree_deinit(&tree);
 
 cleanup:
     for (i = 0; i < ARRAY_SIZE(dirs); i++)
@@ -2286,6 +2352,9 @@ cleanup:
 
 static NV_STATUS entry_test_blackwell(uvm_gpu_t *gpu, entry_test_page_size_func entry_test_page_size)
 {
+    // We use entry_test_ampere() because we only want to check for an
+    // additional page size, no MMU page table format changes between Hopper and
+    // Blackwell.
     return entry_test_ampere(gpu, entry_test_page_size_blackwell);
 }
 
@@ -2523,6 +2592,15 @@ static NV_STATUS fake_gpu_init_volta(uvm_gpu_t *fake_gpu)
                          fake_gpu);
 }
 
+static NV_STATUS fake_gpu_init_turing(uvm_gpu_t *fake_gpu)
+{
+    return fake_gpu_init(TURING_CHANNEL_GPFIFO_A,
+                         TURING_DMA_COPY_A,
+                         NV2080_CTRL_MC_ARCH_INFO_ARCHITECTURE_TU100,
+                         0,
+                         fake_gpu);
+}
+
 static NV_STATUS fake_gpu_init_ampere(uvm_gpu_t *fake_gpu)
 {
     return fake_gpu_init(AMPERE_CHANNEL_GPFIFO_A,
@@ -2637,6 +2715,15 @@ static NV_STATUS volta_test_page_tree(uvm_gpu_t *volta)
     TEST_CHECK_RET(fake_gpu_init_volta(volta) == NV_OK);
 
     MEM_NV_CHECK_RET(entry_test_volta(volta, entry_test_page_size_volta), NV_OK);
+
+    return NV_OK;
+}
+
+static NV_STATUS turing_test_page_tree(uvm_gpu_t *turing)
+{
+    TEST_CHECK_RET(fake_gpu_init_turing(turing) == NV_OK);
+
+    MEM_NV_CHECK_RET(entry_test_turing(turing, entry_test_page_size_turing), NV_OK);
 
     return NV_OK;
 }
@@ -2803,6 +2890,7 @@ NV_STATUS uvm_test_page_tree(UVM_TEST_PAGE_TREE_PARAMS *params, struct file *fil
         TEST_NV_CHECK_GOTO(maxwell_test_page_tree(gpu), done);
     TEST_NV_CHECK_GOTO(pascal_test_page_tree(gpu), done);
     TEST_NV_CHECK_GOTO(volta_test_page_tree(gpu), done);
+    TEST_NV_CHECK_GOTO(turing_test_page_tree(gpu), done);
     TEST_NV_CHECK_GOTO(ampere_test_page_tree(gpu), done);
     TEST_NV_CHECK_GOTO(hopper_test_page_tree(gpu), done);
     TEST_NV_CHECK_GOTO(blackwell_test_page_tree(gpu), done);

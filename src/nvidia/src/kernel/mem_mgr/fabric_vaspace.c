@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,6 +27,8 @@
 *         Fabric Virtual Address Space Function Definitions.                *
 *                                                                           *
 \***************************************************************************/
+
+#define NVOC_FABRIC_VASPACE_H_PRIVATE_ACCESS_ALLOWED
 
 #include "gpu/mmu/kern_gmmu.h"
 #include "mem_mgr/vaspace.h"
@@ -68,8 +70,7 @@ _fabricvaspaceBindInstBlk
     FABRIC_VASPACE *pFabricVAS
 )
 {
-    OBJVASPACE *pVAS   = staticCast(pFabricVAS, OBJVASPACE);
-    OBJGPU     *pGpu   = gpumgrGetGpu(gpumgrGetDefaultPrimaryGpu(pVAS->gpuMask));
+    OBJGPU     *pGpu = pFabricVAS->pGpu;
     KernelBus  *pKernelBus  = GPU_GET_KERNEL_BUS(pGpu);
     KernelGmmu *pKernelGmmu = GPU_GET_KERNEL_GMMU(pGpu);
     NV_STATUS   status = NV_OK;
@@ -284,6 +285,7 @@ fabricvaspaceConstruct__IMPL
 
     pFabricVAS->hClient = hClient;
     pFabricVAS->hDevice = hDevice;
+    pFabricVAS->pGpu = pGpu;
 
     // Capture the vasStart and vasLimit for the fabric vaspace.
     pVAS->vasStart = pFabricVAS->pGVAS->vasStart;
@@ -502,8 +504,7 @@ fabricvaspaceFree_IMPL
     NvU64           vAddr
 )
 {
-    OBJVASPACE *pVAS = staticCast(pFabricVAS, OBJVASPACE);
-    OBJGPU     *pGpu = gpumgrGetGpu(gpumgrGetDefaultPrimaryGpu(pVAS->gpuMask));
+    OBJGPU     *pGpu = pFabricVAS->pGpu;
     KernelBus  *pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
     NvU64       blockSize;
     NvBool      bUcFla;
@@ -518,7 +519,7 @@ fabricvaspaceFree_IMPL
     kbusFlush_HAL(pGpu, pKernelBus, (BUS_FLUSH_VIDEO_MEMORY |
                                      BUS_FLUSH_SYSTEM_MEMORY));
 
-    fabricvaspaceInvalidateTlb(pFabricVAS, pGpu, PTE_DOWNGRADE);
+    fabricvaspaceInvalidateTlb(pFabricVAS, NULL, PTE_DOWNGRADE);
 
     _fabricvaspaceUnbindInstBlk(pFabricVAS);
 
@@ -627,8 +628,7 @@ fabricvaspaceBatchFree_IMPL
     NvU32           stride
 )
 {
-    OBJVASPACE *pVAS = staticCast(pFabricVAS, OBJVASPACE);
-    OBJGPU     *pGpu = gpumgrGetGpu(gpumgrGetDefaultPrimaryGpu(pVAS->gpuMask));
+    OBJGPU     *pGpu = pFabricVAS->pGpu;
     KernelBus  *pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
     NvU64       totalFreeSize = 0;
     NvU64       freeSize;
@@ -654,7 +654,7 @@ fabricvaspaceBatchFree_IMPL
     kbusFlush_HAL(pGpu, pKernelBus, (BUS_FLUSH_VIDEO_MEMORY |
                                      BUS_FLUSH_SYSTEM_MEMORY));
 
-    fabricvaspaceInvalidateTlb(pFabricVAS, pGpu, PTE_DOWNGRADE);
+    fabricvaspaceInvalidateTlb(pFabricVAS, NULL, PTE_DOWNGRADE);
 
     _fabricvaspaceUnbindInstBlk(pFabricVAS);
 
@@ -666,11 +666,11 @@ void
 fabricvaspaceInvalidateTlb_IMPL
 (
     FABRIC_VASPACE      *pFabricVAS,
-    OBJGPU              *pGpu,
+    OBJGPU              *pUnused,
     VAS_PTE_UPDATE_TYPE  type
 )
 {
-    vaspaceInvalidateTlb(pFabricVAS->pGVAS, pGpu, type);
+    vaspaceInvalidateTlb(pFabricVAS->pGVAS, pFabricVAS->pGpu, type);
 }
 
 NV_STATUS
@@ -706,11 +706,11 @@ fabricvaspaceGetGpaMemdesc_IMPL
 
     pRootMemDesc = memdescGetRootMemDesc(pFabricMemdesc, &rootOffset);
 
-    RmPhysAddr *pteArray = memdescGetPteArray(pRootMemDesc, AT_GPU);
+    RmPhysAddr physAddr = memdescGetPhysAddr(pRootMemDesc, AT_GPU, 0);
 
-    // Check if pteArray[0] is within the VAS range for the mapping GPU.
-    if ((pteArray[0] < fabricvaspaceGetUCFlaStart(pFabricVAS)) ||
-        (pteArray[0] > fabricvaspaceGetUCFlaLimit(pFabricVAS)))
+    // Check if physAddr is within the VAS range for the mapping GPU.
+    if ((physAddr < fabricvaspaceGetUCFlaStart(pFabricVAS)) ||
+        (physAddr > fabricvaspaceGetUCFlaLimit(pFabricVAS)))
     {
         *ppAdjustedMemdesc = pFabricMemdesc;
         return NV_OK;
@@ -724,7 +724,7 @@ fabricvaspaceGetGpaMemdesc_IMPL
     // in the pteArray should be fine to determine if FLA import is on the
     // mapping GPU.
     //
-    NV_ASSERT_OK_OR_RETURN(btreeSearch(pteArray[0], &pNode,
+    NV_ASSERT_OK_OR_RETURN(btreeSearch(physAddr, &pNode,
                                        pFabricVAS->pFabricVaToGpaMap));
 
     FABRIC_VA_TO_GPA_MAP_NODE *pFabricNode =
@@ -984,11 +984,9 @@ fabricvaspaceUnmapPhysMemdesc_IMPL
     FABRIC_VASPACE    *pFabricVAS,
     MEMORY_DESCRIPTOR *pFabricMemDesc,
     NvU64              fabricOffset,
-    MEMORY_DESCRIPTOR *pPhysMemDesc,
     NvU64              physMapLength
 )
 {
-    OBJGPU *pGpu = pPhysMemDesc->pGpu;
     NvU32 fabricPageCount;
     NvU64 fabricAddr;
     NvU64 fabricPageSize;
@@ -996,18 +994,12 @@ fabricvaspaceUnmapPhysMemdesc_IMPL
     NvU64 mapLength;
     FABRIC_VASPACE_MAPPING_REGIONS regions;
     NvU32 numRegions;
-    RmPhysAddr *pFabricPteArray;
 
     fabricPageSize = memdescGetPageSize(pFabricMemDesc, AT_GPU);
-
-    NV_ASSERT_OR_RETURN_VOID(dynamicCast(pGpu->pFabricVAS, FABRIC_VASPACE) ==
-                             pFabricVAS);
 
     _fabricvaspaceGetMappingRegions(fabricOffset, fabricPageSize, physMapLength,
                                     &regions, &numRegions);
     NV_ASSERT_OR_RETURN_VOID(numRegions != 0);
-
-    pFabricPteArray = memdescGetPteArray(pFabricMemDesc, AT_GPU);
 
     for (i = 0; i < numRegions; i++)
     {
@@ -1022,24 +1014,16 @@ fabricvaspaceUnmapPhysMemdesc_IMPL
 
         for (j = 0; j < fabricPageCount; j++)
         {
-            if (fabricPageCount == 1)
-            {
-                fabricAddr = pFabricPteArray[0] + fabricOffset;
-            }
-            else
-            {
-                fabricAddr = pFabricPteArray[fabricOffset /
-                    pFabricMemDesc->pageArrayGranularity];
-            }
+            // Virtual address, not localized
+            fabricAddr = memdescGetPhysAddr(pFabricMemDesc, AT_GPU, fabricOffset);
 
-            vaspaceUnmap(pFabricVAS->pGVAS, pPhysMemDesc->pGpu, fabricAddr,
-                         fabricAddr + mapLength - 1);
+            vaspaceUnmap(pFabricVAS->pGVAS, pFabricVAS->pGpu, fabricAddr, fabricAddr + mapLength - 1);
 
             fabricOffset = fabricOffset + mapLength;
         }
     }
 
-    fabricvaspaceInvalidateTlb(pFabricVAS, pPhysMemDesc->pGpu, PTE_DOWNGRADE);
+    fabricvaspaceInvalidateTlb(pFabricVAS, NULL, PTE_DOWNGRADE);
 }
 
 NV_STATUS
@@ -1054,9 +1038,8 @@ fabricvaspaceMapPhysMemdesc_IMPL
     NvU32              flags
 )
 {
-    OBJGPU *pGpu = pPhysMemDesc->pGpu;
-    VirtMemAllocator *pDma = GPU_GET_DMA(pGpu);
-    MemoryManager *pMemoryManager = GPU_GET_MEMORY_MANAGER(pGpu);
+    OBJGPU *pFabricGpu = pFabricVAS->pGpu;
+    VirtMemAllocator *pFabricDma = GPU_GET_DMA(pFabricGpu);
     NV_STATUS status;
     DMA_PAGE_ARRAY pageArray;
     NvU32 kind;
@@ -1074,18 +1057,14 @@ fabricvaspaceMapPhysMemdesc_IMPL
     FABRIC_VASPACE_MAPPING_REGIONS regions;
     NvU32 numRegions;
     MEMORY_DESCRIPTOR *pTempMemdesc;
-    NvU32 aperture;
+    GMMU_APERTURE aperture;
     NvU32 peerNumber = BUS_INVALID_PEER;
-    RmPhysAddr *pFabricPteArray;
-    RmPhysAddr *pPhysPteArray;
+    MemoryManager *pPhysMemManager;
 
     NV_ASSERT_OR_RETURN(pFabricMemDesc != NULL, NV_ERR_INVALID_ARGUMENT);
     NV_ASSERT_OR_RETURN(pPhysMemDesc != NULL,   NV_ERR_INVALID_ARGUMENT);
 
     mapFlags |= bReadOnly ? DMA_UPDATE_VASPACE_FLAGS_READ_ONLY : 0;
-
-    NV_ASSERT_OR_RETURN(dynamicCast(pGpu->pFabricVAS, FABRIC_VASPACE) == pFabricVAS,
-                        NV_ERR_INVALID_ARGUMENT);
 
     physPageSize = memdescGetPageSize(pPhysMemDesc, AT_GPU);
     fabricPageSize = memdescGetPageSize(pFabricMemDesc, AT_GPU);
@@ -1102,33 +1081,35 @@ fabricvaspaceMapPhysMemdesc_IMPL
     if (pFabricVAS->bRpcAlloc)
         return NV_OK;
 
-    status = memmgrGetKindComprFromMemDesc(pMemoryManager, pPhysMemDesc,
+    pPhysMemManager = GPU_GET_MEMORY_MANAGER(pPhysMemDesc->pGpu);
+
+    status = memmgrGetKindComprFromMemDesc(pPhysMemManager, pPhysMemDesc,
                                            physOffset, &kind, &comprInfo);
     NV_ASSERT_OK_OR_RETURN(status);
 
     if (memdescGetAddressSpace(pPhysMemDesc) == ADDR_FBMEM)
     {
-        aperture = NV_MMU_PTE_APERTURE_VIDEO_MEMORY;
+        aperture = GMMU_APERTURE_VIDEO;
     }
     else if (memdescIsEgm(pPhysMemDesc))
     {
-        aperture = NV_MMU_PTE_APERTURE_PEER_MEMORY;
+        aperture = GMMU_APERTURE_PEER;
         //
         // Make sure that we receive a mapping request for EGM memory
         // only if local EGM is enabled.
         //
-        NV_ASSERT_OR_RETURN(pMemoryManager->bLocalEgmEnabled, NV_ERR_INVALID_STATE);
-        peerNumber = pMemoryManager->localEgmPeerId;
+        NV_ASSERT_OR_RETURN(pPhysMemManager->bLocalEgmEnabled, NV_ERR_INVALID_STATE);
+        peerNumber = pPhysMemManager->localEgmPeerId;
     }
     else if (memdescGetAddressSpace(pPhysMemDesc) == ADDR_SYSMEM)
     {
         if (memdescGetCpuCacheAttrib(pPhysMemDesc) == NV_MEMORY_CACHED)
         {
-            aperture = NV_MMU_PTE_APERTURE_SYSTEM_COHERENT_MEMORY;
+            aperture = GMMU_APERTURE_SYS_COH;
         }
         else
         {
-            aperture = NV_MMU_PTE_APERTURE_SYSTEM_NON_COHERENT_MEMORY;
+            aperture = GMMU_APERTURE_SYS_NONCOH;
         }
     }
     else
@@ -1139,10 +1120,8 @@ fabricvaspaceMapPhysMemdesc_IMPL
 
     _fabricvaspaceGetMappingRegions(fabricOffset, fabricPageSize, physMapLength,
                                     &regions, &numRegions);
-    NV_ASSERT_OR_RETURN(numRegions != 0, NV_ERR_INVALID_ARGUMENT);
 
-    pFabricPteArray = memdescGetPteArray(pFabricMemDesc, AT_GPU);
-    pPhysPteArray = memdescGetPteArray(pPhysMemDesc, AT_GPU);
+    NV_ASSERT_OR_RETURN(numRegions != 0, NV_ERR_INVALID_ARGUMENT);
 
     for (i = 0; i < numRegions; i++)
     {
@@ -1158,25 +1137,29 @@ fabricvaspaceMapPhysMemdesc_IMPL
 
         for (j = 0; j < fabricPageCount; j++)
         {
-            if (fabricPageCount == 1)
-            {
-                fabricAddr = pFabricPteArray[0] + fabricOffset;
-            }
-            else
-            {
-                fabricAddr = pFabricPteArray[fabricOffset /
-                    pFabricMemDesc->pageArrayGranularity];
-            }
+            // Virtual address, not localized
+            fabricAddr = memdescGetPhysAddr(pFabricMemDesc, AT_GPU, fabricOffset);
+
+            //
+            // Physical address, may be localized
+            // FLA code offsets into the page array
+            //
+            dmaPageArrayInitFromMemDesc(&pageArray, pPhysMemDesc, AT_GPU);
 
             if (pageArray.count == 1)
             {
-                physAddr = pPhysPteArray[0] + physOffset;
+                //
+                // Need to add on the offset to contiguous address directly
+                // We can't override the physAddr of the dmaPageArray
+                // because it points back to the original pPhysMemDesc's
+                // pteArray, and doing so would corrupt that.
+                //
+                physAddr = memdescGetPhysAddr(pPhysMemDesc, AT_GPU, physOffset);
                 pageArray.pData = &physAddr;
             }
             else
             {
-                pageArray.pData = &pPhysPteArray[physOffset /
-                    pPhysMemDesc->pageArrayGranularity];
+                pageArray.startIndex = physOffset / pPhysMemDesc->pageArrayGranularity;
             }
 
             //
@@ -1200,14 +1183,14 @@ fabricvaspaceMapPhysMemdesc_IMPL
             }
 
             // Map the memory fabric object at the given physical memory offset.
-            status = dmaUpdateVASpace_HAL(pGpu, pDma, pFabricVAS->pGVAS, pTempMemdesc,
-                                      NULL, fabricAddr, fabricAddr + mapLength - 1,
-                                      mapFlags, &pageArray, 0, &comprInfo, 0,
-                                      NV_MMU_PTE_VALID_TRUE,
-                                      aperture,
-                                      peerNumber, NVLINK_INVALID_FABRIC_ADDR,
-                                      DMA_DEFER_TLB_INVALIDATE, NV_FALSE,
-                                      memdescGetPageSize(pTempMemdesc, AT_GPU));
+            status = dmaUpdateVASpace_HAL(pFabricGpu, pFabricDma, pFabricVAS->pGVAS, pTempMemdesc,
+                                          NULL, fabricAddr, fabricAddr + mapLength - 1,
+                                          mapFlags, &pageArray, 0, &comprInfo, 0,
+                                          NV_MMU_PTE_VALID_TRUE, aperture,
+                                          dmaIsDefaultGpuUncached_HAL(pFabricDma, pTempMemdesc, aperture, NV_FALSE),
+                                          peerNumber, NVLINK_INVALID_FABRIC_ADDR,
+                                          DMA_DEFER_TLB_INVALIDATE, NV_FALSE,
+                                          memdescGetPageSize(pTempMemdesc, AT_GPU));
 
             if (pTempMemdesc != pPhysMemDesc)
                 memdescDestroy(pTempMemdesc);
@@ -1220,15 +1203,14 @@ fabricvaspaceMapPhysMemdesc_IMPL
         }
     }
 
-    fabricvaspaceInvalidateTlb(pFabricVAS, pPhysMemDesc->pGpu, PTE_UPGRADE);
+    fabricvaspaceInvalidateTlb(pFabricVAS, NULL, PTE_UPGRADE);
 
     return NV_OK;
 
 fail:
     for (j = 0; j < i; j++)
         fabricvaspaceUnmapPhysMemdesc(pFabricVAS, pFabricMemDesc,
-                                      regions.r[j].offset, pPhysMemDesc,
-                                      regions.r[j].length);
+                                      regions.r[j].offset, regions.r[j].length);
 
     return status;
 }

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -496,7 +496,7 @@ rmGpuLockAlloc(NvU32 gpuInst)
 
 
     threadId = portThreadGetCurrentThreadId();
-    timestamp = osGetCurrentTick();
+    timestamp = osGetMonotonicTimeNs();
     INSERT_LOCK_TRACE(&rmGpuLockInfo.traceInfo,
                       NV_RETURN_ADDRESS(),
                       lockTraceAlloc,
@@ -579,7 +579,7 @@ rmGpuLockFree(NvU32 gpuInst)
     rmGpuLockInfo.gpusLockableMask &= ~NVBIT(gpuInst);
 
     threadId = portThreadGetCurrentThreadId();
-    timestamp = osGetCurrentTick();
+    timestamp = osGetMonotonicTimeNs();
     INSERT_LOCK_TRACE(&rmGpuLockInfo.traceInfo,
                       NV_RETURN_ADDRESS(),
                       lockTraceFree,
@@ -658,6 +658,7 @@ static void _gpuLocksAcquireDisableInterrupts(NvU32 gpuInst, NvU32 flags)
         Intr *pIntr = GPU_GET_INTR(pGpu);
         NvBool isIsr = !!(flags & GPU_LOCK_FLAGS_COND_ACQUIRE);
         NvBool bBcEnabled = gpumgrGetBcEnabledStatus(pGpu);
+        KernelDisplay  *pKernelDisplay = GPU_GET_KERNEL_DISPLAY(pGpu);
 
         // Always disable intrs for cond code
         gpumgrSetBcEnabledStatus(pGpu, NV_FALSE);
@@ -673,7 +674,7 @@ static void _gpuLocksAcquireDisableInterrupts(NvU32 gpuInst, NvU32 flags)
         osDisableInterrupts(pGpu, isIsr);
 
         if ((pIntr != NULL) && pIntr->getProperty(pIntr, PDB_PROP_INTR_USE_INTR_MASK_FOR_LOCKING) &&
-             (isIsr == NV_FALSE) )
+            ((isIsr == NV_FALSE) || (pKernelDisplay != NULL && pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE))) )
         {
             NvU64 oldIrql;
             NvU32 intrMaskFlags;
@@ -691,6 +692,8 @@ static void _gpuLocksAcquireDisableInterrupts(NvU32 gpuInst, NvU32 flags)
             // interrupt handling after this, so we don't need more top half
             // interrupts preventing it from running. Removing the isIsr check
             // results in slight perf degredation.
+            // Attempt to do so if we have a separate interrupt line which
+            // keeps the interrupts separate
             //
             // This originally also done to allow the interrupt to be read in the
             // NV_PMC_INTR_0 status register, but that is no longer required. 
@@ -699,11 +702,9 @@ static void _gpuLocksAcquireDisableInterrupts(NvU32 gpuInst, NvU32 flags)
             {
                 intrSetDisplayInterruptEnable_HAL(pGpu, pIntr, NV_TRUE,  NULL /* threadstate */);
             }
-            else
-            {
-                intrSetIntrMask_HAL(pGpu, pIntr, &pIntr->intrMask.engMaskUnblocked, NULL /* threadstate */);
-            }
 
+            // Set the bits in NV_PMC_INTR_EN
+            intrSetIntrMask_HAL(pGpu, pIntr, &pIntr->intrMask.engMaskUnblocked, NULL /* threadstate */);
             intrSetIntrEnInHw_HAL(pGpu, pIntr, intrGetIntrEn(pIntr), NULL /* threadstate */);
 
             rmIntrMaskLockRelease(pGpu, oldIrql);
@@ -904,7 +905,7 @@ _rmGpuLocksAcquire(NvU32 gpuMask, NvU32 flags, NvU32 module, void *ra, NvU32 *pG
 
     // Get start wait time if measuring lock times
     if (pSys->getProperty(pSys, PDB_PROP_SYS_RM_LOCK_TIME_COLLECT))
-        startWaitTime = osGetCurrentTick();
+        startWaitTime = osGetMonotonicTimeNs();
 
     //
     // Now (attempt) to acquire the locks...
@@ -1085,7 +1086,7 @@ per_gpu_lock_acquired:
         }
 
         // add acquire record to GPUs lock trace
-        timestamp = osGetCurrentTick();
+        timestamp = osGetMonotonicTimeNs();
         INSERT_LOCK_TRACE(&rmGpuLockInfo.traceInfo,
                           ra,
                           lockTraceAcquire,
@@ -1105,7 +1106,7 @@ next_gpu_instance:
     // Update total GPU lock wait time if measuring lock times
     if (status == NV_OK && pSys->getProperty(pSys, PDB_PROP_SYS_RM_LOCK_TIME_COLLECT))
     {
-        timestamp = osGetCurrentTick();
+        timestamp = osGetMonotonicTimeNs();
 
         portAtomicExAddU64(&rmGpuLockInfo.totalWaitTime, timestamp - startWaitTime);
     }
@@ -1539,6 +1540,49 @@ static void _gpuLocksReleaseHandleDeferredWork(NvU32 gpuMask)
         if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu))
             continue;
 
+    KernelDisplay  *pKernelDisplay = GPU_GET_KERNEL_DISPLAY(pGpu);
+
+        {
+            // Process any deferred vblanks
+            if (gpuIsGpuFullPower(pGpu) &&
+                (pKernelDisplay != NULL) &&
+                kdispGetDeferredVblankHeadMask(pKernelDisplay))
+            {
+                MC_ENGINE_BITVECTOR intrDispPending;
+
+                //
+                // The pending intr would have been cleared from the HW by now
+                // if there is a deferred vblank. We don't need a retrigger for
+                // MC_ENGINE_IDX_DISP since that is handled in a separate function
+                // and doesn't need a clear if a vblank is pending.
+                // We do need a retrigger if we have a separate interrupt vector,
+                // so do one if we have it.
+                //
+                bitVectorClrAll(&intrDispPending);
+
+                if (pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE))
+                {
+                    bitVectorSet(&intrDispPending, MC_ENGINE_IDX_DISP_LOW);
+                }
+
+                //
+                // If we can't acquire here, another thread is either queueing more
+                // deferred vblanks (top half) or already servicing all the vblanks (passive thread)
+                //
+                if (kdispAcquireLowLatencyLockConditional(&pKernelDisplay->lowLatencyLock))
+                {
+                    kdispServiceLowLatencyIntrs_HAL(pGpu, pKernelDisplay,
+                                                    0,
+                                                    VBLANK_STATE_PROCESS_ALL_CALLBACKS,
+                                                    NULL /* threadstate */,
+                                                    NULL /* vblankIntrServicedHeadMask */,
+                                                    &intrDispPending);
+
+                    kdispReleaseLowLatencyLock(&pKernelDisplay->lowLatencyLock);
+                }
+            }
+        }
+
         for (i = 0; i < MAX_DEFERRED_CMDS; i++)
         {
             if (pGpu->pRmCtrlDeferredCmd[i].pending == RMCTRL_DEFERRED_READY)
@@ -1657,7 +1701,7 @@ _rmGpuLocksRelease(NvU32 gpuMask, NvU32 flags, OBJGPU *pDpcGpu, void *ra)
                   gpuMask, rmGpuLockInfo.gpusLockedMask);
         gpuMask &= rmGpuLockInfo.gpusLockedMask;
 
-        if (gpuMask == 0)
+        if ((gpuMask == 0) && !bReleaseAllocLock)
         {
             NV_PRINTF(LEVEL_WARNING, "No more GPUs to release after skipping");
             portSyncSpinlockRelease(rmGpuLockInfo.pLock);
@@ -1791,7 +1835,7 @@ _rmGpuLocksRelease(NvU32 gpuMask, NvU32 flags, OBJGPU *pDpcGpu, void *ra)
             }
 
             // add release record to GPUs lock trace
-            timestamp = osGetCurrentTick();
+            timestamp = osGetMonotonicTimeNs();
             INSERT_LOCK_TRACE(&rmGpuLockInfo.traceInfo,
                               ra,
                               lockTraceRelease,
@@ -1923,7 +1967,7 @@ done:
         pSys->getProperty(pSys, PDB_PROP_SYS_RM_LOCK_TIME_COLLECT) &&
         startHoldTime > 0)
     {
-        timestamp = osGetCurrentTick();
+        timestamp = osGetMonotonicTimeNs();
 
         portAtomicExAddU64(&rmGpuLockInfo.totalHoldTime,
             timestamp - startHoldTime);
@@ -1955,13 +1999,13 @@ rmGpuLocksRelease(NvU32 flags, OBJGPU *pDpcGpu)
     // mask have been hidden with rmGpuLockHide().  In such cases we won't
     // even bother trying to do the release.
     //
-    if (rmGpuLockInfo.gpusLockedMask == 0)
+    if ((rmGpuLockInfo.gpusLockedMask == 0) && !_rmGpuAllocLockIsOwner())
         return NV_SEMA_RELEASE_SUCCEED;
 
     // Only attempt to release the ones that are both locked and lockable
     gpuMask = rmGpuLockInfo.gpusLockedMask & rmGpuLockInfo.gpusLockableMask;
 
-    if (gpuMask == 0)
+    if ((gpuMask == 0) && !_rmGpuAllocLockIsOwner())
     {
         NV_PRINTF(LEVEL_WARNING,
                   "Attempting to release nonlockable GPUs. gpuMask = 0x%08x, gpusLockableMask = 0x%08x\n",
@@ -2010,7 +2054,7 @@ rmGpuGroupLockRelease(GPU_MASK gpuMask, NvU32 flags)
     OBJSYS *pSys = SYS_GET_INSTANCE();
     OBJGPU *pDpcGpu = NULL;
 
-    if (gpuMask == 0)
+    if ((gpuMask == 0) && !_rmGpuAllocLockIsOwner())
         return;
 
     //
@@ -2056,7 +2100,7 @@ rmDeviceGpuLocksRelease(OBJGPU *pGpu, NvU32 flags, OBJGPU *pDpcGpu)
         gpuMask = gpumgrGetGpuMask(pGpu);
     }
 
-    if (gpuMask == 0)
+    if ((gpuMask == 0) && !_rmGpuAllocLockIsOwner())
     {
         return NV_SEMA_RELEASE_SUCCEED;
     }

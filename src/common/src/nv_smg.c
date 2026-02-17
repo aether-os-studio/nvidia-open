@@ -104,9 +104,11 @@ static struct nvGlobalMigMappingRec {
     nvMIGDeviceDescription deviceList[NV_MAX_MIG_DEVICES];
 } globalMigMapping;
 
-/* Having two macros establishes a meaningful vocabulary. */
-#define MIG_DEVICE_ID_TO_INDEX(id) ((id) ^ 0xffffffff)
-#define MIG_DEVICE_INDEX_TO_ID(ix) ((ix) ^ 0xffffffff)
+/* MIGDeviceId to index in deviceList */
+#define MIG_DEVICE_ID_TO_INDEX(id)              (~(id) & ~MIG_DEVICE_ID_SUBDEV_MASK)
+/* Create a MIGDeviceId based on index and subdev index. */
+#define MIG_DEVICE_INDEX_TO_ID(idx, subdev_idx) ((~(idx) & ~MIG_DEVICE_ID_SUBDEV_MASK) |                \
+                                                 ((subdev_idx & 0xf) << MIG_DEVICE_ID_SUBDEV_SHIFT))
 
 static NvBool InitializeGlobalMapping(nvRMContextPtr rmctx);
 static NvBool ListPartitions(nvRMContextPtr rmctx, struct nvGlobalMigMappingRec *mappings);
@@ -280,7 +282,9 @@ NvU32 nvSMGGetDeviceById(nvRMContextPtr rmctx,
         return NV_ERR_INVALID_STATE;
     }
 
-    if (index < globalMigMapping.deviceCount) {
+    if (index < globalMigMapping.deviceCount &&
+        /* The following condition is to satisfy array bounds checker: */
+        globalMigMapping.deviceCount <= NV_MAX_MIG_DEVICES) {
         *uniDev = &globalMigMapping.deviceList[index];
         return NV_OK;
     }
@@ -314,7 +318,7 @@ NvU32 nvSMGGetDefaultDeviceForDeviceInstance(nvRMContextPtr rmctx,
 
     for (i = 0; i < globalMigMapping.deviceCount; i++) {
         if (globalMigMapping.deviceList[i].deviceInstance == deviceInstance &&
-            globalMigMapping.deviceList[i].migAccessOk) {
+            globalMigMapping.deviceList[i].smgAccessOk) {
             *uniDev = &globalMigMapping.deviceList[i];
             return NV_OK;
         }
@@ -392,6 +396,8 @@ static NvBool ListPartitions(nvRMContextPtr rmctx, struct nvGlobalMigMappingRec 
 
     NvU32 i;
     NvU32 res;
+    NvU32 currentGpuId = NV0000_CTRL_GPU_INVALID_ID;
+    NvU32 currentGpuIdSubDevIndex = 0;
 
     ENTER_WORKSPACE(ws);
     smg_memset(ws, 0, sizeof(*ws));
@@ -440,19 +446,27 @@ static NvBool ListPartitions(nvRMContextPtr rmctx, struct nvGlobalMigMappingRec 
             EXIT_WORKSPACE_AND_RETURN(ws, NV_FALSE);
         }
 
+        /* Maintain per-GPU index of MIG devices. */
+        if (currentGpuId != dev->gpuId) {
+            currentGpuId = dev->gpuId;
+            currentGpuIdSubDevIndex = 0;
+        } else {
+            currentGpuIdSubDevIndex++;
+        }
+
         /* Fill in device data. */
         migDev = &mapping->deviceList[mapping->deviceCount];
-        migDev->migDeviceId = MIG_DEVICE_INDEX_TO_ID(mapping->deviceCount);
+        migDev->migDeviceId = MIG_DEVICE_INDEX_TO_ID(mapping->deviceCount, currentGpuIdSubDevIndex);
         migDev->deviceInstance = ws->idInfoParams.deviceInstance;
         migDev->subDeviceInstance = ws->idInfoParams.subDeviceInstance;
         migDev->gpuId = dev->gpuId;
         migDev->gpuInstanceId = dev->gpuInstanceId;
         migDev->computeInstanceId = dev->computeInstanceId;
-        migDev->migAccessOk = NV_FALSE;
+        migDev->smgAccessOk = NV_FALSE;
 
         /* If it's a graphics partition and we can access it, mark valid */
         if (GetGraphicsPartitionUUIDForDevice(rmctx, migDev)) {
-            migDev->migAccessOk = NV_TRUE;
+            migDev->smgAccessOk = NV_TRUE;
         }
 
         mapping->deviceCount++;
@@ -601,6 +615,11 @@ static NvBool GetGraphicsPartitionUUIDForDevice(nvRMContextPtr rmctx, nvMIGDevic
     smg_memcpy(migDev->migUuid,
                ws->getUuidParams.uuidStr,
                NV_MIG_DEVICE_UUID_STR_LENGTH);
+
+    ct_assert(NVC638_UUID_LEN == NV_GPU_UUID_LEN);
+    smg_memcpy(migDev->migUuidBin,
+               ws->getUuidParams.uuid,
+               NV_GPU_UUID_LEN);
     success = NV_TRUE;
 
 out:
@@ -647,7 +666,7 @@ static NvBool GpuHasSMGPartitions (NvU32 gpuId)
 
     for (i = 0; i < globalMigMapping.deviceCount; i++) {
         if (globalMigMapping.deviceList[i].gpuId == gpuId &&
-            globalMigMapping.deviceList[i].migAccessOk) {
+            globalMigMapping.deviceList[i].smgAccessOk) {
             return NV_TRUE;
         }
     }

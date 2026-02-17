@@ -121,17 +121,19 @@ const struct NVOC_CLASS_DEF __nvoc_class_def_MemoryMapper =
     /*pExportInfo=*/        &__nvoc_export_info__MemoryMapper
 };
 
+// By default, all exported methods are enabled.
 #if !defined(NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG)
 #define NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(x)      (0)
 #endif
 
+// Exported method array
 static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryMapper[] = 
 {
     {               /*  [0] */
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x808u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memmapperCtrlCmdSubmitOperations_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memmapperCtrlCmdSubmitOperations_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x808u)
         /*flags=*/      0x808u,
         /*accessRight=*/0x0u,
@@ -146,7 +148,7 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryMa
 #if NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x8u)
         /*pFunc=*/      (void (*)(void)) NULL,
 #else
-        /*pFunc=*/      (void (*)(void)) memmapperCtrlCmdResizeQueue_IMPL,
+        /*pFunc=*/      (void (*)(void)) &memmapperCtrlCmdResizeQueue_IMPL,
 #endif // NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x8u)
         /*flags=*/      0x8u,
         /*accessRight=*/0x0u,
@@ -157,7 +159,6 @@ static const struct NVOC_EXPORTED_METHOD_DEF __nvoc_exported_method_def_MemoryMa
         /*func=*/       "memmapperCtrlCmdResizeQueue"
 #endif
     },
-
 };
 
 
@@ -421,6 +422,7 @@ const struct NVOC_EXPORT_INFO __nvoc_export_info__MemoryMapper =
     /*pExportEntries=*/ __nvoc_exported_method_def_MemoryMapper
 };
 
+void __nvoc_memmapperDestruct(MemoryMapper*);
 void __nvoc_dtor_GpuResource(GpuResource*);
 void __nvoc_dtor_MemoryMapper(MemoryMapper *pThis) {
     __nvoc_memmapperDestruct(pThis);
@@ -454,23 +456,11 @@ __nvoc_ctor_MemoryMapper_exit:
 // Vtable initialization
 static void __nvoc_init_funcTable_MemoryMapper_1(MemoryMapper *pThis) {
     PORT_UNREFERENCED_VARIABLE(pThis);
-
-    // memmapperCtrlCmdSubmitOperations -- exported (id=0xfe0101)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x808u)
-    pThis->__memmapperCtrlCmdSubmitOperations__ = &memmapperCtrlCmdSubmitOperations_IMPL;
-#endif
-
-    // memmapperCtrlCmdResizeQueue -- exported (id=0xfe0102)
-#if !NVOC_EXPORTED_METHOD_DISABLED_BY_FLAG(0x8u)
-    pThis->__memmapperCtrlCmdResizeQueue__ = &memmapperCtrlCmdResizeQueue_IMPL;
-#endif
-} // End __nvoc_init_funcTable_MemoryMapper_1 with approximately 2 basic block(s).
+} // End __nvoc_init_funcTable_MemoryMapper_1
 
 
-// Initialize vtable(s) for 27 virtual method(s).
+// Initialize vtable(s) for 25 virtual method(s).
 void __nvoc_init_funcTable_MemoryMapper(MemoryMapper *pThis) {
-
-    // Initialize vtable(s) with 2 per-object function pointer(s).
     __nvoc_init_funcTable_MemoryMapper_1(pThis);
 }
 
@@ -500,16 +490,25 @@ void __nvoc_init__MemoryMapper(MemoryMapper *pThis) {
     __nvoc_init_funcTable_MemoryMapper(pThis);
 }
 
-NV_STATUS __nvoc_objCreate_MemoryMapper(MemoryMapper **ppThis, Dynamic *pParent, NvU32 createFlags, struct CALL_CONTEXT * arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams)
+NV_STATUS __nvoc_objCreate_MemoryMapper(MemoryMapper **ppThis, Dynamic *pParent, NvU32 createFlags, struct CALL_CONTEXT *arg_pCallContext, struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams)
 {
     NV_STATUS status;
     Object *pParentObj = NULL;
     MemoryMapper *pThis;
 
-    // Assign `pThis`, allocating memory unless suppressed by flag.
-    status = __nvoc_handleObjCreateMemAlloc(createFlags, sizeof(MemoryMapper), (void**)&pThis, (void**)ppThis);
-    if (status != NV_OK)
-        return status;
+    // Don't allocate memory if the caller has already done so.
+    if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
+    {
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, ppThis != NULL && *ppThis != NULL, NV_ERR_INVALID_PARAMETER);
+        pThis = *ppThis;
+    }
+
+    // Allocate memory
+    else
+    {
+        pThis = portMemAllocNonPaged(sizeof(MemoryMapper));
+        NV_CHECK_OR_RETURN(LEVEL_ERROR, pThis != NULL, NV_ERR_NO_MEMORY);
+    }
 
     // Zero is the initial value for everything.
     portMemSet(pThis, 0, sizeof(MemoryMapper));
@@ -527,6 +526,7 @@ NV_STATUS __nvoc_objCreate_MemoryMapper(MemoryMapper **ppThis, Dynamic *pParent,
         pThis->__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object.pParent = NULL;
     }
 
+    // Initialize vtable, RTTI, etc., then call constructor.
     __nvoc_init__MemoryMapper(pThis);
     status = __nvoc_ctor_MemoryMapper(pThis, arg_pCallContext, arg_pParams);
     if (status != NV_OK) goto __nvoc_objCreate_MemoryMapper_cleanup;
@@ -534,31 +534,35 @@ NV_STATUS __nvoc_objCreate_MemoryMapper(MemoryMapper **ppThis, Dynamic *pParent,
     // Assignment has no effect if NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT is set.
     *ppThis = pThis;
 
+    // Success
     return NV_OK;
 
+    // Do not call destructors here since the constructor already called them.
 __nvoc_objCreate_MemoryMapper_cleanup:
 
     // Unlink the child from the parent if it was linked above.
     if (pParentObj != NULL)
         objRemoveChild(pParentObj, &pThis->__nvoc_base_GpuResource.__nvoc_base_RmResource.__nvoc_base_RsResource.__nvoc_base_Object);
 
-    // Do not call destructors here since the constructor already called them.
+    // Zero out memory that was allocated by caller.
     if (createFlags & NVOC_OBJ_CREATE_FLAGS_IN_PLACE_CONSTRUCT)
         portMemSet(pThis, 0, sizeof(MemoryMapper));
+
+    // Free memory allocated by `__nvoc_handleObjCreateMemAlloc`.
     else
     {
         portMemFree(pThis);
         *ppThis = NULL;
     }
 
-    // coverity[leaked_storage:FALSE]
+    // Failure
     return status;
 }
 
 NV_STATUS __nvoc_objCreateDynamic_MemoryMapper(MemoryMapper **ppThis, Dynamic *pParent, NvU32 createFlags, va_list args) {
     NV_STATUS status;
-    struct CALL_CONTEXT * arg_pCallContext = va_arg(args, struct CALL_CONTEXT *);
-    struct RS_RES_ALLOC_PARAMS_INTERNAL * arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
+    struct CALL_CONTEXT *arg_pCallContext = va_arg(args, struct CALL_CONTEXT *);
+    struct RS_RES_ALLOC_PARAMS_INTERNAL *arg_pParams = va_arg(args, struct RS_RES_ALLOC_PARAMS_INTERNAL *);
 
     status = __nvoc_objCreate_MemoryMapper(ppThis, pParent, createFlags, arg_pCallContext, arg_pParams);
 

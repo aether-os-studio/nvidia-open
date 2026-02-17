@@ -214,6 +214,34 @@ void patchChecksum(NvU8 *pBuf)
 }
 
 CODE_SEGMENT(PAGE_DD_CODE)
+NvU32 NvTiming_CalculateVBlankTimeInUs(const NVT_TIMING *pT)
+{
+    NvU32 activeLines, blankLines;
+    NvU32 blankPixels;
+    NvU32 pclk1khz = pT->pclk1khz;
+
+    if (pclk1khz == 0)
+    {
+        pclk1khz = RRx1kToPclk1khz(pT);
+        if (pclk1khz == 0)
+        {
+            return 0;
+        }
+    }
+
+    // Calculate HBlank pixels on the last active line
+    blankPixels = pT->HTotal - pT->HVisible;
+    
+    // Calculate active and blank lines (handle interlaced mode)
+    activeLines = pT->interlaced ? pT->VVisible * 2 : pT->VVisible;
+    blankLines  = (pT->interlaced == 0) ? (pT->VTotal - activeLines): (pT->VTotal * 2 + 1 - activeLines);
+    
+    // Include HBlank time on the last active line together with all VBlank lines
+    blankPixels = blankPixels + (blankLines * pT->HTotal);
+    return (NvU32)((NvU64)blankPixels * 1000 / pclk1khz);
+}
+
+CODE_SEGMENT(PAGE_DD_CODE)
 NVT_STATUS NvTiming_ComposeCustTimingString(NVT_TIMING *pT)
 {
     if (pT == NULL) 
@@ -226,7 +254,7 @@ NVT_STATUS NvTiming_ComposeCustTimingString(NVT_TIMING *pT)
 }
 
 CODE_SEGMENT(PAGE_DD_CODE)
-NvU16 NvTiming_CalcRR(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
+NvU16 NvTiming_CalcRR(NvU32 pclk1khz, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
 {
     NvU16 rr = 0;
 
@@ -236,7 +264,7 @@ NvU16 NvTiming_CalcRR(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
 
         if (totalPixelsIn2Fields != 0)
         {
-            rr = (NvU16)axb_div_c_64((NvU64)pclk * 2, (NvU64)10000, (NvU64)totalPixelsIn2Fields);
+            rr = (NvU16)axb_div_c_64((NvU64)pclk1khz * 2, (NvU64)1000, (NvU64)totalPixelsIn2Fields);
         }
     }
     else
@@ -245,14 +273,14 @@ NvU16 NvTiming_CalcRR(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
 
         if (totalPixels != 0)
         {
-            rr = (NvU16)axb_div_c_64((NvU64)pclk, (NvU64)10000, (NvU64)totalPixels);
+            rr = (NvU16)axb_div_c_64((NvU64)pclk1khz, (NvU64)1000, (NvU64)totalPixels);
         }
     }
     return rr;
 }
 
 CODE_SEGMENT(PAGE_DD_CODE)
-NvU32 NvTiming_CalcRRx1k(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
+NvU32 NvTiming_CalcRRx1k(NvU32 pclk1khz, NvU16 interlaced, NvU16 HTotal, NvU16 VTotal)
 {
     NvU32 rrx1k = 0;
 
@@ -262,7 +290,7 @@ NvU32 NvTiming_CalcRRx1k(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTota
 
         if (totalPixelsIn2Fields != 0)
         {
-            rrx1k = (NvU32)axb_div_c_64((NvU64)pclk * 2, (NvU64)10000000, (NvU64)totalPixelsIn2Fields);
+            rrx1k = (NvU32)axb_div_c_64((NvU64)pclk1khz * 2, (NvU64)1000000, (NvU64)totalPixelsIn2Fields);
         }
     }
     else
@@ -271,7 +299,7 @@ NvU32 NvTiming_CalcRRx1k(NvU32 pclk, NvU16 interlaced, NvU16 HTotal, NvU16 VTota
 
         if (totalPixels != 0)
         {
-            rrx1k = (NvU32)axb_div_c_64((NvU64)pclk, (NvU64)10000000, (NvU64)totalPixels);
+            rrx1k = (NvU32)axb_div_c_64((NvU64)pclk1khz, (NvU64)1000000, (NvU64)totalPixels);
         }
     }
  
@@ -341,11 +369,19 @@ NvU32 NvTiming_IsTimingRelaxedEqual(const NVT_TIMING *pT1, const NVT_TIMING *pT2
 }
 
 CODE_SEGMENT(NONPAGE_DD_CODE)
-NvU32 RRx1kToPclk (NVT_TIMING *pT)
+NvU32 RRx1kToPclk (const NVT_TIMING *pT)
 {
     return (NvU32)axb_div_c_64(pT->HTotal * (pT->VTotal + ((pT->interlaced != 0) ? (pT->VTotal + 1) : 0)),
                                pT->etc.rrx1k,
                                1000 * ((pT->interlaced != 0) ? 20000 : 10000));
+}
+
+CODE_SEGMENT(NONPAGE_DD_CODE)
+NvU32 RRx1kToPclk1khz (const NVT_TIMING *pT)
+{
+    return (NvU32)axb_div_c_64((NvU32)pT->HTotal * (NvU32)(pT->VTotal + ((pT->interlaced != 0) ? (pT->VTotal + 1) : 0)),
+                               pT->etc.rrx1k,
+                               1000 * ((pT->interlaced != 0) ? 2000 : 1000));
 }
 
 CODE_SEGMENT(PAGE_DD_CODE)

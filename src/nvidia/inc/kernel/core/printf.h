@@ -204,6 +204,7 @@ void nvDbgInitRmMsg(struct OBJGPU *);
 #define NVRM_MSG_PREFIX_FUNCTION        NVBIT(2)
 #define NVRM_MSG_PREFIX_LINE            NVBIT(3)
 #define NVRM_MSG_PREFIX_OSTIMESTAMP     NVBIT(4)
+#define NVRM_MSG_PREFIX_GPU_INSTANCE    NVBIT(5)
 NvU32 RmMsgPrefix(NvU32 prefix, const char *filename, NvU32 linenumber, const char *function, char *str, NvU32 len);
 // nvDbgRmMsgCheck return code
 #define NVRM_MSG_NORMAL 0    // Use normal message handling (warnings/errors)

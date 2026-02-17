@@ -67,8 +67,8 @@ void DPCDHALImpl2x::parseAndSetCableId(NvU8 cableId)
 
 void DPCDHALImpl2x::performCableIdHandshakeForTypeC()
 {
-    NvU8 txCableCaps = 0;
-    NvU8 rxCableCaps = 0;
+    NvU8    txCableCaps         = 0;
+    NvU8    rxCableCaps         = 0;
 
     if (AuxRetry::ack !=
         bus.read(NV_DPCD20_CABLE_ATTRIBUTES_UPDATED_BY_DPRX, &rxCableCaps, sizeof rxCableCaps))
@@ -79,6 +79,7 @@ void DPCDHALImpl2x::performCableIdHandshakeForTypeC()
     {
         parseAndSetCableId(rxCableCaps);
     }
+    caps2x.rxCableCaps.bHandshakeCompleted = (rxCableCaps != 0);
 
     if (caps2x.txCableCaps.bIsSupported)
     {
@@ -210,6 +211,7 @@ void DPCDHALImpl2x::performCableIdHandshakeForTypeC()
         {
             parseAndSetCableId(rxCableCaps);
         }
+        caps2x.rxCableCaps.bHandshakeCompleted = (rxCableCaps != 0);
 
         // If no matches, reflect that to the DPRX
         if (txCableCaps != rxCableCaps)
@@ -238,6 +240,7 @@ void DPCDHALImpl2x::performCableIdHandshake()
     {
         parseAndSetCableId(rxCableCaps);
     }
+    caps2x.rxCableCaps.bHandshakeCompleted = NV_TRUE;
 }
 
 void DPCDHALImpl2x::setUSBCCableIDInfo(NV0073_CTRL_DP_USBC_CABLEID_INFO *cableIDInfo)
@@ -284,6 +287,16 @@ void DPCDHALImpl2x::parseAndReadCaps()
     unsigned retries = 16;
 
     DPCDHALImpl::parseAndReadCaps();
+
+    // reset DP tunneling UHBR caps
+    caps2x.dpInTunnelingCaps.bUHBR_10GSupported = NV_FALSE;
+    caps2x.dpInTunnelingCaps.bUHBR_13_5GSupported = NV_FALSE;
+    caps2x.dpInTunnelingCaps.bUHBR_20GSupported = NV_FALSE;
+
+    // reset rxCableCaps
+    caps2x.rxCableCaps.bUHBR_10GSupported = NV_TRUE;
+    caps2x.rxCableCaps.bUHBR_13_5GSupported = NV_TRUE;
+    caps2x.rxCableCaps.bUHBR_20GSupported = NV_TRUE;
 
     // 02206h
     if (AuxRetry::ack == bus.read(NV_DPCD14_EXTENDED_MAIN_LINK_CHANNEL_CODING, &buffer[0], 1))
@@ -606,7 +619,7 @@ void DPCDHALImpl2x::overrideCableIdCap(LinkRate linkRate, bool bEnable)
             caps2x.rxCableCaps .bUHBR_10GSupported = bEnable;
             break;
         default:
-            DP_PRINTF(DP_ERROR, "DPHAL> Invalid link rate (%d) to override.", linkRate);
+            DP_PRINTF(DP_ERROR, "DPHAL> Invalid link rate (%" LinkRate_fmtu ") to override.", linkRate);
     }
 }
 

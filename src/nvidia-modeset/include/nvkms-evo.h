@@ -161,8 +161,6 @@ void nvSetDVCEvo(NVDispEvoPtr pDispEvo,
                  const NvU32 head,
                  NvS32 dvc,
                  NVEvoUpdateState *updateState);
-void nvSetImageSharpeningEvo(NVDispEvoRec *pDispEvo, const NvU32 head,
-                             const NvU32 value, NVEvoUpdateState *updateState);
 
 NvBool nvLayerSetPositionEvo(
     NVDevEvoPtr pDevEvo,
@@ -172,6 +170,7 @@ NvBool nvConstructHwModeTimingsEvo(const NVDpyEvoRec *pDpyEvo,
                                    const struct NvKmsMode *pKmsMode,
                                    const struct NvKmsSize *pViewPortSizeIn,
                                    const struct NvKmsRect *pViewPortOut,
+                                   const NvBool dscPassThrough,
                                    NVDpyAttributeColor *pDpyColor,
                                    NVHwModeTimingsEvoPtr pTimings,
                                    const struct NvKmsModeValidationParams

@@ -45,6 +45,7 @@
 
 #include "nv_smg.h"
 
+#include "class/cl00c3.h" /* NV01_MEMORY_SYNCPOINT */
 #include "class/cl0005.h" /* NV01_EVENT */
 
 #include <class/cl0070.h> // NV01_MEMORY_VIRTUAL
@@ -55,22 +56,18 @@
 #include <class/cl0040.h> /* NV01_MEMORY_LOCAL_USER */
 #include <class/cl2080.h> /* NV20_SUBDEVICE_0 */
 
-#include "class/clc37b.h" /* NVC37B_WINDOW_IMM_CHANNEL_DMA */
-#include "class/clc37e.h" /* NVC37E_WINDOW_CHANNEL_DMA */
 #include "class/clc57b.h" /* NVC57B_WINDOW_IMM_CHANNEL_DMA */
 #include "class/clc57e.h" /* NVC57E_WINDOW_CHANNEL_DMA */
 #include "class/clc67b.h" /* NVC67B_WINDOW_IMM_CHANNEL_DMA */
 #include "class/clc67e.h" /* NVC67E_WINDOW_CHANNEL_DMA */
+#include "class/clc97b.h" /* NVC97B_WINDOW_IMM_CHANNEL_DMA */
+#include "class/clc97e.h" /* NVC97E_WINDOW_CHANNEL_DMA */
 #include "class/clca7b.h" /* NVCA7B_WINDOW_IMM_CHANNEL_DMA */
 #include "class/clca7e.h" /* NVCA7E_WINDOW_CHANNEL_DMA */
 #include "class/clcb7b.h" /* NVCB7B_WINDOW_IMM_CHANNEL_DMA */
 #include "class/clcb7e.h" /* NVCB7E_WINDOW_CHANNEL_DMA */
-
-#include "class/cl917b.h" /* NV917B_OVERLAY_IMM_CHANNEL_PIO */
-
-#include "class/cl927c.h" /* NV927C_BASE_CHANNEL_DMA */
-
-#include "class/cl917e.h" /* NV917E_OVERLAY_CHANNEL_DMA */
+#include "class/clcc7b.h" /* NVCC7B_WINDOW_IMM_CHANNEL_DMA */
+#include "class/clcc7e.h" /* NVCC7E_WINDOW_CHANNEL_DMA */
 
 #include <ctrl/ctrl0000/ctrl0000gpu.h> /* NV0000_CTRL_GPU_* */
 #include <ctrl/ctrl0002.h> /* NV0002_CTRL_CMD_BIND_CONTEXTDMA */
@@ -81,13 +78,11 @@
 #include <ctrl/ctrl0076.h> /* NV0076_CTRL_CMD_NOTIFY_CONSOLE_DISABLED */
 #include <ctrl/ctrl0080/ctrl0080gpu.h> /* NV0080_CTRL_CMD_GPU_SET_DISPLAY_OWNER */
 #include <ctrl/ctrl0080/ctrl0080unix.h> /* NV0080_CTRL_CMD_OS_UNIX_VT_SWITCH */
-#include <ctrl/ctrl2080/ctrl2080bios.h> /* NV2080_CTRL_CMD_BIOS_GET_NBSI */
 #include <ctrl/ctrl2080/ctrl2080bus.h> /* NV2080_CTRL_CMD_BUS_GET_INFO */
 #include <ctrl/ctrl2080/ctrl2080event.h> /* NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION */
 #include <ctrl/ctrl2080/ctrl2080tmr.h> /* NV2080_CTRL_CMD_TIMER_GET_TIME */
 #include <ctrl/ctrl2080/ctrl2080unix.h> /* NV2080_CTRL_CMD_OS_UNIX_GC6_BLOCKER_REFCNT */
 #include <ctrl/ctrl5070/ctrl5070chnc.h> /* NV5070_CTRL_CMD_SET_RMFREE_FLAGS */
-#include <ctrl/ctrl5070/ctrl5070or.h> /* NV5070_CTRL_CMD_SET_DAC_PWR */
 #include <ctrl/ctrl0000/ctrl0000system.h> /* NV0000_CTRL_CMD_SYSTEM_GET_APPROVAL_COOKIE */
 
 #include "nvos.h"
@@ -269,7 +264,8 @@ static NvBool QueryGpuCapabilities(NVDevEvoPtr pDevEvo)
     }
 
     pDevEvo->supportsSyncpts =
-        FALSE;
+        nvkms_kernel_supports_syncpts() &&
+        nvRmEvoClassListCheck(pDevEvo, NV01_MEMORY_SYNCPOINT);
 
     return TRUE;
 }
@@ -1308,7 +1304,6 @@ static NvBool ProbeDisplayCommonCaps(NVDevEvoPtr pDevEvo)
     return TRUE;
 }
 
-
 /*!
  * Query the variable refresh rate (G-SYNC) capability of a display.
  */
@@ -1326,7 +1321,6 @@ static void ProbeVRRCaps(NVDispEvoPtr pDispEvo)
     }
 
     pDispEvo->vrr.hasPlatformCookie = params.bIsPresent;
-
 }
 
 
@@ -1578,6 +1572,19 @@ static void ReceiveDPIRQEvent(void *arg, void *pEventDataVoid, NvU32 hEvent,
         0);
 }
 
+static void ReceiveHDMIFRLRetrainEvent(void *arg, void *pEventDataVoid, NvU32 hEvent,
+                                       NvU32 Data, NV_STATUS Status)
+{
+    Nv2080HdmiFrlRequestNotification *pEventData =
+        (Nv2080HdmiFrlRequestNotification *) pEventDataVoid;
+
+    (void) nvkms_alloc_timer_with_ref_ptr(
+        nvHandleHDMIFRLRetrainEventDeferredWork, /* callback */
+        arg,    /* argument (this is a ref_ptr to a pDispEvo) */
+        pEventData->displayId, /* dataU32 */
+        0);
+}
+
 NvBool nvRmRegisterCallback(const NVDevEvoRec *pDevEvo,
                             NVOS10_EVENT_KERNEL_CALLBACK_EX *cb,
                             struct nvkms_ref_ptr *ref_ptr,
@@ -1814,6 +1821,35 @@ enum NvKmsAllocDeviceStatus nvRmAllocDisplays(NVDevEvoPtr pDevEvo)
         }
     }
 
+    // Allocate a handler for the HDMI "FRL Retraining" event, which is signaled
+    // when there's a FRL retraining request from the sink.
+    FOR_ALL_EVO_DISPLAYS(pDispEvo, sd, pDevEvo) {
+        NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS setEventParams = { };
+        NvU32 subDevice, ret;
+
+        subDevice = pDevEvo->pSubDevices[pDispEvo->displayOwner]->handle;
+        pDispEvo->HDMIFRLRetrainEventHandle =
+            nvGenerateUnixRmHandle(&pDevEvo->handleAllocator);
+        if (!RegisterDispCallback(&pDispEvo->rmHDMIFRLRetrainCallback, pDispEvo,
+                                  pDispEvo->HDMIFRLRetrainEventHandle, ReceiveHDMIFRLRetrainEvent,
+                                  NV2080_NOTIFIERS_HDMI_FRL_RETRAINING_REQUEST)) {
+            nvEvoLogDev(pDevEvo, EVO_LOG_WARN,
+                        "Failed to register HDMI FRL retrain event");
+        }
+        // Enable HDMI FRL retrain event notifications for this subdevice.
+        setEventParams.event = NV2080_NOTIFIERS_HDMI_FRL_RETRAINING_REQUEST;
+        setEventParams.action = NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT;
+        if ((ret = nvRmApiControl(nvEvoGlobal.clientHandle,
+                                  subDevice,
+                                  NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION,
+                                  &setEventParams,
+                                  sizeof(setEventParams)))
+                != NVOS_STATUS_SUCCESS) {
+            nvEvoLogDev(pDevEvo, EVO_LOG_WARN,
+                        "Failed to enable HDMI FRL retrain notifications (subdevice: %d) (error: 0x%x)", sd, ret);
+        }
+    }
+
     FOR_ALL_EVO_DISPLAYS(pDispEvo, sd, pDevEvo) {
         ProbeBootDisplays(pDispEvo);
 
@@ -1823,8 +1859,6 @@ enum NvKmsAllocDeviceStatus nvRmAllocDisplays(NVDevEvoPtr pDevEvo)
 
         ProbeVRRCaps(pDispEvo);
     }
-
-    nvAllocVrrEvo(pDevEvo);
 
     return NVKMS_ALLOC_DEVICE_STATUS_SUCCESS;
 
@@ -1841,10 +1875,8 @@ void nvRmDestroyDisplays(NVDevEvoPtr pDevEvo)
     int dispIndex;
     NvS64 tmp;
 
-    nvFreeVrrEvo(pDevEvo);
-
     FOR_ALL_EVO_DISPLAYS(pDispEvo, dispIndex, pDevEvo) {
-
+        const NvU32 subDevice = pDevEvo->pSubDevices[pDispEvo->displayOwner]->handle;
         // Before freeing anything, dump anything left in the RM's DisplayPort
         // AUX channel log.
         if (pDispEvo->dpAuxLoggingEnabled) {
@@ -1875,6 +1907,31 @@ void nvRmDestroyDisplays(NVDevEvoPtr pDevEvo)
             nvFreeUnixRmHandle(&pDevEvo->handleAllocator,
                                pDispEvo->hotplugEventHandle);
             pDispEvo->hotplugEventHandle = 0;
+        }
+
+        // Free the HDMI FRL retrain event
+        if (pDispEvo->HDMIFRLRetrainEventHandle != 0) {
+            NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS setEventParams = { };
+
+            // Disable HDMI FRL retrain notifications for this subdevice
+            setEventParams.event = NV2080_NOTIFIERS_HDMI_FRL_RETRAINING_REQUEST;
+            setEventParams.action = NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_DISABLE;
+            if ((ret = nvRmApiControl(nvEvoGlobal.clientHandle,
+                                      subDevice,
+                                      NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION,
+                                      &setEventParams,
+                                      sizeof(setEventParams))
+                    != NVOS_STATUS_SUCCESS)) {
+                nvEvoLogDev(pDevEvo, EVO_LOG_WARN,
+                                "Failed to disable HDMI FRL retrain notifications (subdevice: %d) (error: 0x%x)", dispIndex, ret);
+            }
+
+            nvRmApiFree(nvEvoGlobal.clientHandle,
+                        nvEvoGlobal.clientHandle,
+                        pDispEvo->HDMIFRLRetrainEventHandle);
+            nvFreeUnixRmHandle(&pDevEvo->handleAllocator,
+                               pDispEvo->HDMIFRLRetrainEventHandle);
+            pDispEvo->HDMIFRLRetrainEventHandle = 0;
         }
     }
 
@@ -2243,19 +2300,7 @@ void nvRmPauseDP(NVDevEvoPtr pDevEvo)
 
 
 /*!
- * This function is called whenever the DPMS level changes; On a CRT,
- * you set the DPMS level by (dis/en)abling the hsync and vsync
- * signals:
- *
- * Hsync  Vsync  Mode
- * =====  =====  ====
- * 1      1      Normal (on).
- * 0      1      Standby -- RGB guns off, power supply on, tube filaments
- *               energized, (screen saver mode).
- * 1      0      Suspend -- RGB guns off, power supply off, tube filaments
- *               energized.
- * 0      0      Power off -- small auxiliary circuit stays on to monitor the
- *               hsync/vsync signals to know when to wake up.
+ * This function is called whenever the DPMS level changes.
  */
 NvBool nvRmSetDpmsEvo(NVDpyEvoPtr pDpyEvo, NvS64 value)
 {
@@ -2267,8 +2312,7 @@ NvBool nvRmSetDpmsEvo(NVDpyEvoPtr pDpyEvo, NvS64 value)
         nvDPDeviceSetPowerState(pDpyEvo,
                                 (value == NV_KMS_DPY_ATTRIBUTE_DPMS_ON));
         return TRUE;
-    } else if (pDpyEvo->pConnectorEvo->legacyType !=
-               NV0073_CTRL_SPECIFIC_DISPLAY_TYPE_CRT) {
+    } else {
         NV0073_CTRL_SPECIFIC_SET_MONITOR_POWER_PARAMS powerParams = { 0 };
 
         powerParams.subDeviceInstance = pDispEvo->displayOwner;
@@ -2281,61 +2325,6 @@ NvBool nvRmSetDpmsEvo(NVDpyEvoPtr pDpyEvo, NvS64 value)
         ret = nvRmApiControl(nvEvoGlobal.clientHandle,
                              pDevEvo->displayCommonHandle,
                              NV0073_CTRL_CMD_SPECIFIC_SET_MONITOR_POWER,
-                             &powerParams,
-                             sizeof(powerParams));
-
-        return (ret == NVOS_STATUS_SUCCESS);
-    } else {
-        NVConnectorEvoPtr pConnectorEvo = pDpyEvo->pConnectorEvo;
-        NV5070_CTRL_CMD_SET_DAC_PWR_PARAMS powerParams = { { 0 }, 0 };
-
-        powerParams.base.subdeviceIndex = pDispEvo->displayOwner;
-        if (pConnectorEvo->or.primary == NV_INVALID_OR) {
-            nvAssert(pConnectorEvo->or.primary != NV_INVALID_OR);
-            return FALSE;
-        }
-        powerParams.orNumber = pConnectorEvo->or.primary;
-
-        switch (value) {
-        case NV_KMS_DPY_ATTRIBUTE_DPMS_ON:
-            powerParams.normalHSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_HSYNC, _ENABLE);
-            powerParams.normalVSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_VSYNC, _ENABLE);
-            break;
-        case NV_KMS_DPY_ATTRIBUTE_DPMS_STANDBY:
-            powerParams.normalHSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_HSYNC, _LO);
-            powerParams.normalVSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_VSYNC, _ENABLE);
-            break;
-        case NV_KMS_DPY_ATTRIBUTE_DPMS_SUSPEND:
-            powerParams.normalHSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_HSYNC, _ENABLE);
-            powerParams.normalVSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_VSYNC, _LO);
-            break;
-        case NV_KMS_DPY_ATTRIBUTE_DPMS_OFF:
-            powerParams.normalHSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_HSYNC, _LO);
-            powerParams.normalVSync =
-                DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_VSYNC, _LO);
-            break;
-        default:
-            return FALSE;
-        }
-        // XXX These could probably be disabled too, in the DPMS_OFF case.
-        powerParams.normalData =
-            DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_DATA, _ENABLE);
-        powerParams.normalPower =
-            DRF_DEF(5070, _CTRL_CMD_SET_DAC, _PWR_NORMAL_PWR, _ON);
-
-        powerParams.flags =
-            DRF_DEF(5070, _CTRL_CMD_SET_DAC_PWR_FLAGS, _SPECIFIED_NORMAL, _YES);
-
-        ret = nvRmApiControl(nvEvoGlobal.clientHandle,
-                             pDevEvo->displayHandle,
-                             NV5070_CTRL_CMD_SET_DAC_PWR,
                              &powerParams,
                              sizeof(powerParams));
 
@@ -2455,13 +2444,10 @@ NvBool nvRmAllocSysmem(NVDevEvoPtr pDevEvo, NvU32 memoryHandle,
 /*****************************************************************************/
 
 NvBool nvRmAllocEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma,
-                       NvU64 limit, NvU32 ctxDmaFlags, NvU32 subDeviceMask)
+                       NvU64 limit, NvU32 ctxDmaFlags)
 {
-    NvBool bufferAllocated = FALSE;
     NvU32  memoryHandle = 0;
     void  *pBase = NULL;
-
-    NvBool needBar1Mapping = FALSE;
 
     NVSurfaceDescriptor surfaceDesc;
     NvU32 localCtxDmaFlags = ctxDmaFlags |
@@ -2475,55 +2461,12 @@ NvBool nvRmAllocEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma,
     memoryHandle = nvGenerateUnixRmHandle(&pDevEvo->handleAllocator);
 
     /*
-     * On certain GPUs (GF100, GF104) there exists a hardware bug that forces
-     * us to put display NISO surfaces (pushbuffer, semaphores, notifiers
-     * accessed by EVO) in vidmem instead of sysmem.  See bug 632241 for
-     * details.
+     * Setting NVKMS_MEMORY_NISO since nvRmAllocEvoDma() is currently only
+     * called to allocate pushbuffer and notifier memory.
      */
-    if (NV5070_CTRL_SYSTEM_GET_CAP(pDevEvo->capsBits,
-            NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY)) {
-        NV_MEMORY_ALLOCATION_PARAMS memAllocParams = { };
-
-        memAllocParams.owner = NVKMS_RM_HEAP_ID;
-        memAllocParams.type = NVOS32_TYPE_DMA;
-        memAllocParams.size = limit + 1;
-        memAllocParams.attr = DRF_DEF(OS32, _ATTR, _PAGE_SIZE, _4KB) |
-                              DRF_DEF(OS32, _ATTR, _LOCATION, _VIDMEM);
-
-        ret = nvRmApiAlloc(nvEvoGlobal.clientHandle,
-                           pDevEvo->deviceHandle,
-                           memoryHandle,
-                           NV01_MEMORY_LOCAL_USER,
-                           &memAllocParams);
-
-        if (ret != NVOS_STATUS_SUCCESS) {
-            /* We can't fall back to any of the sysmem options below, due to
-             * the nature of the HW bug forcing us to use vidmem. */
-            nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                        "Unable to allocate video memory for display");
-            return FALSE;
-        }
-
-        limit = memAllocParams.size - 1;
-
-        /* We'll access these surfaces through IFB */
-        pBase = NULL;
-
-        bufferAllocated = TRUE;
-        needBar1Mapping = TRUE;
-    }
-
-    if (!bufferAllocated) {
-        /*
-         * Setting NVKMS_MEMORY_NISO since nvRmAllocEvoDma() is currently only
-         * called to allocate pushbuffer and notifier memory.
-         */
-        bufferAllocated = nvRmAllocSysmem(pDevEvo, memoryHandle,
-                                          &localCtxDmaFlags, &pBase, limit + 1,
-                                          NVKMS_MEMORY_NISO);
-    }
-
-    if (!bufferAllocated) {
+    if (!nvRmAllocSysmem(pDevEvo, memoryHandle,
+                         &localCtxDmaFlags, &pBase, limit + 1,
+                         NVKMS_MEMORY_NISO)) {
         nvFreeUnixRmHandle(&pDevEvo->handleAllocator, memoryHandle);
 
         nvEvoLogDev(pDevEvo, EVO_LOG_ERROR, "Unable to allocate DMA memory");
@@ -2533,7 +2476,8 @@ NvBool nvRmAllocEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma,
 
     // Create surface descriptor for this allocation.
     ret = pDevEvo->hal->AllocSurfaceDescriptor(pDevEvo, &surfaceDesc, memoryHandle,
-                                               localCtxDmaFlags, limit);
+                                               localCtxDmaFlags, limit,
+                                               FALSE /* mapToDisplayRm */);
 
     if (ret != NVOS_STATUS_SUCCESS) {
         if (pBase != NULL) {
@@ -2558,28 +2502,7 @@ NvBool nvRmAllocEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma,
 
     pDma->limit = limit;
 
-    if (needBar1Mapping) {
-        NvBool result;
-
-        result = nvRmEvoMapVideoMemory(pDevEvo, memoryHandle, limit + 1,
-                                       pDma->subDeviceAddress, subDeviceMask);
-
-        if (!result) {
-            nvRmFreeEvoDma(pDevEvo, pDma);
-            return FALSE;
-        }
-    } else {
-        int sd;
-
-        for (sd = 0; sd < pDevEvo->numSubDevices; sd++) {
-            if (((1 << sd) & subDeviceMask) == 0) {
-                continue;
-            }
-
-            pDma->subDeviceAddress[sd] = pBase;
-        }
-    }
-    pDma->isBar1Mapping = needBar1Mapping;
+    pDma->cpuAddress = pBase;
 
     return TRUE;
 }
@@ -2593,35 +2516,18 @@ void nvRmFreeEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma)
                                         &pDma->surfaceDesc);
 
     if (pDma->memoryHandle != 0) {
-        if (pDma->isBar1Mapping) {
-            nvRmEvoUnMapVideoMemory(pDevEvo, pDma->memoryHandle,
-                                    pDma->subDeviceAddress);
-        } else {
-            int sd = 0;
-            NvBool addressMapped = TRUE;
+        if (pDma->cpuAddress != NULL) {
+            ret = nvRmApiUnmapMemory(nvEvoGlobal.clientHandle,
+                                     pDevEvo->deviceHandle,
+                                     pDma->memoryHandle,
+                                     pDma->cpuAddress,
+                                     0);
 
-            /* If pDma->subDeviceAddress[sd] is non-NULL for multiple subdevices,
-             * assume they are the same. Unmap only one but set all of them to
-             * NULL. This matches the logic in nvRmAllocEvoDma().
-             */
-            for (sd = 0; sd < pDevEvo->numSubDevices; sd++) {
-
-                if (addressMapped && pDma->subDeviceAddress[sd] != NULL) {
-                    ret = nvRmApiUnmapMemory(nvEvoGlobal.clientHandle,
-                                             pDevEvo->deviceHandle,
-                                             pDma->memoryHandle,
-                                             pDma->subDeviceAddress[sd],
-                                             0);
-
-                    if (ret != NVOS_STATUS_SUCCESS) {
-                        nvEvoLogDev(pDevEvo, EVO_LOG_ERROR, "Failed to unmap memory");
-                    }
-
-                    addressMapped = FALSE;
-                }
-
-                pDma->subDeviceAddress[sd] = NULL;
+            if (ret != NVOS_STATUS_SUCCESS) {
+                nvEvoLogDev(pDevEvo, EVO_LOG_ERROR, "Failed to unmap memory");
             }
+
+            pDma->cpuAddress = NULL;
         }
 
         ret = nvRmApiFree(nvEvoGlobal.clientHandle,
@@ -2635,8 +2541,6 @@ void nvRmFreeEvoDma(NVDevEvoPtr pDevEvo, NVEvoDmaPtr pDma)
         pDma->memoryHandle = 0;
 
         pDma->limit = 0;
-
-        nvkms_memset(pDma->subDeviceAddress, 0, sizeof(pDma->subDeviceAddress));
     }
 }
 
@@ -2689,15 +2593,14 @@ RmAllocEvoChannel(NVDevEvoPtr pDevEvo,
         // Allocation of the notifiers
         if (!nvRmAllocEvoDma(pDevEvo, pNotifiersDma,
                              NV_DMA_EVO_NOTIFIER_SIZE - 1,
-                             DRF_DEF(OS03, _FLAGS, _TYPE, _NOTIFIER),
-                             1 << sd)) {
+                             DRF_DEF(OS03, _FLAGS, _TYPE, _NOTIFIER))) {
             nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
                         "Notifier DMA allocation failed");
 
             goto fail;
         }
 
-        nvAssert(pNotifiersDma->subDeviceAddress[sd] != NULL);
+        nvAssert(pNotifiersDma->cpuAddress != NULL);
 
         // Only allocate memory for one pushbuffer.
         // All subdevices will share (via subdevice mask)
@@ -2708,25 +2611,14 @@ RmAllocEvoChannel(NVDevEvoPtr pDevEvo,
             NVEvoDmaPtr pDma = &buffer->dma;
 
             // Allocation of the push buffer
-            if (!nvRmAllocEvoDma(pDevEvo, pDma, limit, 0, SUBDEVICE_MASK_ALL)) {
+            if (!nvRmAllocEvoDma(pDevEvo, pDma, limit, 0)) {
                 nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
                             "Display engine push buffer DMA allocation failed");
 
                 goto fail;
             }
 
-            if (!pDma->isBar1Mapping) {
-                buffer->base = pDma->subDeviceAddress[0];
-            } else {
-                /*
-                 * Allocate memory for a shadow copy in sysmem that we'll copy
-                 * to vidmem via BAR1 at kickoff time.
-                 */
-                buffer->base = nvCalloc(buffer->dma.limit + 1, 1);
-                if (buffer->base == NULL) {
-                    goto fail;
-                }
-            }
+            buffer->base = pDma->cpuAddress;
 
             buffer->channel_handle =
                 nvGenerateUnixRmHandle(&pDevEvo->handleAllocator);
@@ -2793,8 +2685,6 @@ RmAllocEvoChannel(NVDevEvoPtr pDevEvo,
     buffer->pDevEvo      = pDevEvo;
     buffer->currentSubDevMask = SUBDEVICE_MASK_ALL;
 
-    pChannel->imm.type = NV_EVO_IMM_CHANNEL_NONE;
-
     pDevEvo->hal->InitChannel(pDevEvo, pChannel);
 
     return pChannel;
@@ -2806,66 +2696,10 @@ fail:
     return NULL;
 }
 
-static void FreeImmediateChannelPio(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
-{
-    NVEvoPioChannel *pPio = pChannel->imm.u.pio;
-    int sd;
-
-    nvAssert(pPio != NULL);
-
-    for (sd = 0; sd < pDevEvo->numSubDevices; sd++) {
-
-        if (!pPio->control[sd]) {
-            continue;
-        }
-
-        if (nvRmApiUnmapMemory(nvEvoGlobal.clientHandle,
-                               pDevEvo->pSubDevices[sd]->handle,
-                               pPio->handle,
-                               pPio->control[sd],
-                               0)) {
-            nvEvoLogDev(pDevEvo, EVO_LOG_WARN,
-                        "Failed to unmap immediate channel");
-        }
-        pPio->control[sd] = NULL;
-    }
-
-    if (pPio->handle) {
-        if (nvRmApiFree(nvEvoGlobal.clientHandle,
-                        pDevEvo->displayHandle,
-                        pPio->handle)) {
-            nvEvoLogDev(pDevEvo, EVO_LOG_WARN, "Failed to free immediate channel");
-        }
-        nvFreeUnixRmHandle(&pDevEvo->handleAllocator,
-                           pPio->handle);
-        pPio->handle = 0;
-    }
-
-    nvFree(pPio);
-    pChannel->imm.u.pio = NULL;
-}
-
-static void FreeImmediateChannelDma(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
-{
-    NVEvoChannelPtr pImmChannel = pChannel->imm.u.dma;
-
-    RmFreeEvoChannel(pDevEvo, pImmChannel);
-    pChannel->imm.u.dma = NULL;
-}
-
 static void FreeImmediateChannel(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
 {
-    switch (pChannel->imm.type) {
-        case NV_EVO_IMM_CHANNEL_NONE:
-            return;
-        case NV_EVO_IMM_CHANNEL_PIO:
-            FreeImmediateChannelPio(pDevEvo, pChannel);
-            break;
-        case NV_EVO_IMM_CHANNEL_DMA:
-            FreeImmediateChannelDma(pDevEvo, pChannel);
-            break;
-    }
-    pChannel->imm.type = NV_EVO_IMM_CHANNEL_NONE;
+    RmFreeEvoChannel(pDevEvo, pChannel->imm.dma);
+    pChannel->imm.dma = NULL;
 }
 
 /*****************************************************************************/
@@ -2922,11 +2756,9 @@ static void RmFreeEvoChannel(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
         const NvBool isCore =
             FLD_TEST_DRF64(_EVO, _CHANNEL_MASK, _CORE, _ENABLE,
                            pChannel->channelMask);
-        const NvBool isBase =
-            (pChannel->channelMask & NV_EVO_CHANNEL_MASK_BASE_ALL) != 0;
         const NvBool isWindow =
             (pChannel->channelMask & NV_EVO_CHANNEL_MASK_WINDOW_ALL) != 0;
-        if ((isCore || isBase || isWindow) && pDevEvo->skipConsoleRestore) {
+        if ((isCore || isWindow) && pDevEvo->skipConsoleRestore) {
             NV5070_CTRL_SET_RMFREE_FLAGS_PARAMS params = { };
 
             params.base.subdeviceIndex = pDevEvo->vtFbInfo.subDeviceInstance;
@@ -2954,12 +2786,6 @@ static void RmFreeEvoChannel(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
         pChannel->pb.channel_handle = 0;
     }
 
-    if (pChannel->pb.dma.isBar1Mapping) {
-        /* Pushbuffer is in vidmem. Free shadow copy. */
-        nvFree(pChannel->pb.base);
-        pChannel->pb.base = NULL;
-    }
-
     nvRmFreeEvoDma(pDevEvo, &pChannel->pb.dma);
 
     if (pChannel->notifiersDma) {
@@ -2972,64 +2798,6 @@ static void RmFreeEvoChannel(NVDevEvoPtr pDevEvo, NVEvoChannelPtr pChannel)
     pChannel->notifiersDma = NULL;
 
     nvFree(pChannel);
-}
-
-static NvBool
-AllocImmediateChannelPio(NVDevEvoPtr pDevEvo,
-                         NVEvoChannelPtr pChannel,
-                         NvU32 class,
-                         NvU32 instance,
-                         NvU32 mapSize)
-{
-    NVEvoPioChannel *pPio = NULL;
-    NvU32 handle = nvGenerateUnixRmHandle(&pDevEvo->handleAllocator);
-    NV50VAIO_CHANNELPIO_ALLOCATION_PARAMETERS params = { 0 };
-    NvU32 sd;
-
-    pPio = nvCalloc(1, sizeof(*pPio));
-
-    if (!pPio) {
-        return FALSE;
-    }
-
-    pChannel->imm.type = NV_EVO_IMM_CHANNEL_PIO;
-    pChannel->imm.u.pio = pPio;
-
-    params.channelInstance = instance;
-
-    if (nvRmApiAlloc(nvEvoGlobal.clientHandle,
-                     pDevEvo->displayHandle,
-                     handle,
-                     class,
-                     &params) != NVOS_STATUS_SUCCESS) {
-        nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                    "Failed to allocate immediate channel %d", instance);
-        nvFreeUnixRmHandle(&pDevEvo->handleAllocator, handle);
-        return FALSE;
-    }
-
-    pPio->handle = handle;
-
-    for (sd = 0; sd < pDevEvo->numSubDevices; sd++) {
-        void *pImm = NULL;
-
-        if (nvRmApiMapMemory(nvEvoGlobal.clientHandle,
-                             pDevEvo->pSubDevices[sd]->handle,
-                             pPio->handle,
-                             0,
-                             mapSize,
-                             &pImm,
-                             0) != NVOS_STATUS_SUCCESS) {
-            nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                        "Failed to map immediate channel %d/%d",
-                        sd, instance);
-            return FALSE;
-        }
-
-        pPio->control[sd] = pImm;
-    }
-
-    return TRUE;
 }
 
 static NvBool
@@ -3046,90 +2814,7 @@ AllocImmediateChannelDma(NVDevEvoPtr pDevEvo,
         return FALSE;
     }
 
-    pChannel->imm.type = NV_EVO_IMM_CHANNEL_DMA;
-    pChannel->imm.u.dma = pImmChannel;
-
-    return TRUE;
-}
-
-NvBool nvRMAllocateBaseChannels(NVDevEvoPtr pDevEvo)
-{
-    int i;
-    NvU32 baseClass = 0;
-    NvU32 head;
-
-    static const NvU32 baseChannelDmaClasses[] = {
-        NV927C_BASE_CHANNEL_DMA,
-    };
-
-    for (i = 0; i < ARRAY_LEN(baseChannelDmaClasses); i++) {
-        if (nvRmEvoClassListCheck(pDevEvo, baseChannelDmaClasses[i])) {
-            baseClass = baseChannelDmaClasses[i];
-            break;
-        }
-    }
-
-    if (!baseClass) {
-        nvEvoLogDev(pDevEvo, EVO_LOG_ERROR, "Unsupported base display class");
-        return FALSE;
-    }
-
-    for (head = 0; head < pDevEvo->numHeads; head++) {
-        pDevEvo->base[head] = RmAllocEvoChannel(
-            pDevEvo,
-            DRF_IDX_DEF64(_EVO, _CHANNEL_MASK, _BASE, head, _ENABLE),
-            head, baseClass);
-
-        if (!pDevEvo->base[head]) {
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
-NvBool nvRMAllocateOverlayChannels(NVDevEvoPtr pDevEvo)
-{
-    NvU32 immMapSize;
-    NvU32 head;
-
-    if (!nvRmEvoClassListCheck(pDevEvo,
-                               NV917E_OVERLAY_CHANNEL_DMA)) {
-        nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                    "Unsupported overlay display class");
-        return FALSE;
-    }
-
-    nvAssert(nvRmEvoClassListCheck(pDevEvo, NV917B_OVERLAY_IMM_CHANNEL_PIO));
-
-    /*
-     * EvoSetImmPointOut91() will interpret the PIO mapping as a pointer
-     * to GK104DispOverlayImmControlPio and access the SetPointOut and
-     * Update fields, which is safe as long as SetPointOut and Update are
-     * at consistent offsets.
-     */
-    nvAssert(offsetof(GK104DispOverlayImmControlPio, SetPointsOut) ==
-             NV917B_SET_POINTS_OUT(NVKMS_LEFT));
-    nvAssert(offsetof(GK104DispOverlayImmControlPio, Update) ==
-             NV917B_UPDATE);
-    immMapSize =
-        NV_MAX(NV917B_SET_POINTS_OUT(NVKMS_LEFT), NV917B_UPDATE) + sizeof(NvV32);
-
-    for (head = 0; head < pDevEvo->numHeads; head++) {
-        pDevEvo->overlay[head] = RmAllocEvoChannel(
-            pDevEvo,
-            DRF_IDX_DEF64(_EVO, _CHANNEL_MASK, _OVERLAY, head, _ENABLE),
-            head, NV917E_OVERLAY_CHANNEL_DMA);
-
-        if (!pDevEvo->overlay[head]) {
-            return FALSE;
-        }
-
-        if (!AllocImmediateChannelPio(pDevEvo, pDevEvo->overlay[head],
-                                      NV917B_OVERLAY_IMM_CHANNEL_PIO, head, immMapSize)) {
-            return FALSE;
-        }
-    }
+    pChannel->imm.dma = pImmChannel;
 
     return TRUE;
 }
@@ -3212,16 +2897,18 @@ NvBool nvRMAllocateWindowChannels(NVDevEvoPtr pDevEvo)
         NvU32 windowClass;
         NvU32 immClass;
     } windowChannelClasses[] = {
+        { NVCC7E_WINDOW_CHANNEL_DMA,
+          NVCC7B_WINDOW_IMM_CHANNEL_DMA },
         { NVCB7E_WINDOW_CHANNEL_DMA,
           NVCB7B_WINDOW_IMM_CHANNEL_DMA },
         { NVCA7E_WINDOW_CHANNEL_DMA,
           NVCA7B_WINDOW_IMM_CHANNEL_DMA },
+        { NVC97E_WINDOW_CHANNEL_DMA,
+          NVC97B_WINDOW_IMM_CHANNEL_DMA },
         { NVC67E_WINDOW_CHANNEL_DMA,
           NVC67B_WINDOW_IMM_CHANNEL_DMA },
         { NVC57E_WINDOW_CHANNEL_DMA,
           NVC57B_WINDOW_IMM_CHANNEL_DMA },
-        { NVC37E_WINDOW_CHANNEL_DMA,
-          NVC37B_WINDOW_IMM_CHANNEL_DMA },
     }, *c = NULL;
 
     for (index = 0; index < ARRAY_LEN(windowChannelClasses); index++) {
@@ -3432,26 +3119,6 @@ NvBool nvRMSetupEvoCoreChannel(NVDevEvoPtr pDevEvo)
     return TRUE;
 }
 
-void nvRMFreeBaseChannels(NVDevEvoPtr pDevEvo)
-{
-    NvU32 head;
-
-    for (head = 0; head < pDevEvo->numHeads; head++) {
-        RmFreeEvoChannel(pDevEvo, pDevEvo->base[head]);
-        pDevEvo->base[head] = NULL;
-    }
-}
-
-void nvRMFreeOverlayChannels(NVDevEvoPtr pDevEvo)
-{
-    NvU32 head;
-
-    for (head = 0; head < pDevEvo->numHeads; head++) {
-        RmFreeEvoChannel(pDevEvo, pDevEvo->overlay[head]);
-        pDevEvo->overlay[head] = NULL;
-    }
-}
-
 void nvRMFreeWindowChannels(NVDevEvoPtr pDevEvo)
 {
     NvU32 window;
@@ -3649,6 +3316,67 @@ NvBool nvRmEvoAllocAndBindSyncpt(
     NVSurfaceDescriptor *pSurfaceDesc,
     NVEvoSyncpt *pEvoSyncpt)
 {
+    NvU32 ret = FALSE;
+
+    NvU32 hSyncpt;
+    NV_MEMORY_SYNCPOINT_ALLOCATION_PARAMS syncptAllocParams = {0};
+
+    /*! Alloc SYNC Object */
+    syncptAllocParams.syncpointId = id;
+
+    hSyncpt = nvGenerateUnixRmHandle(&pDevEvo->handleAllocator);
+    if (hSyncpt == 0) {
+        goto skipEverythingAndFail;
+    }
+
+    ret = nvRmApiAlloc(nvEvoGlobal.clientHandle,
+                       pDevEvo->deviceHandle,
+                       hSyncpt,
+                       NV01_MEMORY_SYNCPOINT,
+                       &syncptAllocParams);
+    if (ret != NVOS_STATUS_SUCCESS) {
+        nvAssert(!"Failed to allocate syncpt object");
+        goto cleanHandleAndFail;
+    }
+
+    /*! Alloc surface descriptor for syncpt object */
+    ret = pDevEvo->hal->AllocSurfaceDescriptor(
+                pDevEvo, pSurfaceDesc, hSyncpt,
+                (DRF_DEF(OS03, _FLAGS, _HASH_TABLE, _DISABLE)),
+                65535 /* 64K-1 */,
+                FALSE /* mapToDisplayRm */);
+
+    if (ret != NVOS_STATUS_SUCCESS) {
+        nvAssert(!"Failed to allocate surface descriptor");
+        goto cleanSyncptHandleAndFail;
+    }
+
+    /*! Bind surface descriptor to syncpt Object */
+    ret = pDevEvo->hal->BindSurfaceDescriptor(pDevEvo, pChannel, pSurfaceDesc);
+    if (ret != NVOS_STATUS_SUCCESS) {
+        nvAssert(!"Failed to bind surface descriptor");
+        goto cleanEverythingAndFail;
+    }
+
+    pEvoSyncpt->id = id;
+    pEvoSyncpt->surfaceDesc = *pSurfaceDesc;
+    pEvoSyncpt->hSyncpt = hSyncpt;
+    pEvoSyncpt->allocated = TRUE;
+
+    return TRUE;
+
+cleanEverythingAndFail:
+    pDevEvo->hal->FreeSurfaceDescriptor(pDevEvo,
+                                        pDevEvo->deviceHandle,
+                                        pSurfaceDesc);
+
+cleanSyncptHandleAndFail:
+    nvRmApiFree(nvEvoGlobal.clientHandle, pDevEvo->deviceHandle, hSyncpt);
+
+cleanHandleAndFail:
+    nvFreeUnixRmHandle(&pDevEvo->handleAllocator, hSyncpt);
+
+skipEverythingAndFail:
     return FALSE;
 }
 
@@ -5688,7 +5416,8 @@ NvU32 nvRmAllocAndBindSurfaceDescriptor(
     NvU32 hMemory,
     const enum NvKmsSurfaceMemoryLayout layout,
     NvU64 limit,
-    NVSurfaceDescriptor *pSurfaceDesc)
+    NVSurfaceDescriptor *pSurfaceDesc,
+    NvBool mapToDisplayRm)
 {
     NVSurfaceDescriptor surfaceDesc;
     NvU32 flags = DRF_DEF(OS03, _FLAGS, _HASH_TABLE, _DISABLE);
@@ -5713,7 +5442,8 @@ NvU32 nvRmAllocAndBindSurfaceDescriptor(
 
     ret =
         pDevEvo->hal->AllocSurfaceDescriptor(pDevEvo, &surfaceDesc,
-                                             hMemory, flags, limit);
+                                             hMemory, flags, limit,
+                                             mapToDisplayRm);
 
     if (ret != NVOS_STATUS_SUCCESS) {
         return ret;

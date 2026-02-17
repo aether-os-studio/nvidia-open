@@ -1,5 +1,5 @@
 /*******************************************************************************
-    Copyright (c) 2016-2024 NVIDIA Corporation
+    Copyright (c) 2016-2025 NVIDIA Corporation
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to
@@ -318,6 +318,60 @@ static void compute_prefetch_mask(uvm_va_block_region_t faulted_region,
     }
 }
 
+// Determine whether prefetching should be applied for the given migration.
+//
+// This function evaluates multiple conditions to decide if prefetching is
+// beneficial:
+//
+// 1. No preferred location policy: Always allow prefetching when no preferred
+//    location is set, as there are no policy constraints.
+//
+// 2. Moving to preferred location: Always allow prefetching when migrating
+//    toward the preferred location, as this aligns with the policy.
+//
+// 3. Confidential Computing exceptions: In CC environments, remote memory
+//    mapping is not always available, forcing memory migration. Allow
+//    prefetching out of the preferred location to facilitate these flows
+//    and improve performance:
+//    - DtoH transfers (migrating to CPU/sysmem)
+//    - HtoD transfers when pages are already resident on CPU
+//
+// Returns true if prefetching logic should be applied, false otherwise.
+static bool should_apply_prefetch_logic(const uvm_va_policy_t *policy,
+                                        uvm_processor_id_t new_residency,
+                                        uvm_va_block_t *va_block,
+                                        uvm_va_block_context_t *va_block_context,
+                                        const uvm_page_mask_t *faulted_pages)
+{
+    // No preferred location set - always allow prefetching
+    if (!UVM_ID_IS_VALID(policy->preferred_location))
+        return true;
+
+    // Moving to preferred location - always allow prefetching
+    if (uvm_id_equal(policy->preferred_location, new_residency))
+        return true;
+
+    // CC sysmem exception logic - allow prefetching out of preferred location
+    // for CC-related sysmem transfers when remote mapping is not available
+    if (!g_uvm_global.conf_computing_enabled)
+        return false;
+
+    // DtoH: migrating to CPU/sysmem
+    if (UVM_ID_IS_CPU(new_residency))
+        return true;
+
+    // HtoD: check if any faulted pages are currently resident on CPU
+    if (UVM_ID_IS_GPU(new_residency)) {
+        const uvm_page_mask_t *cpu_resident_mask = uvm_va_block_resident_mask_get(va_block, UVM_ID_CPU, NUMA_NO_NODE);
+        if (cpu_resident_mask && uvm_page_mask_intersects(faulted_pages, cpu_resident_mask))
+            return true;
+    }
+
+    // PPCIE, MPT CC (P2P access) can do remote mappings - no prefetching
+    // needed
+    return false;
+}
+
 // Within a block we only allow prefetching to a single processor. Therefore,
 // if two processors are accessing non-overlapping regions within the same
 // block they won't benefit from prefetching.
@@ -358,13 +412,16 @@ static NvU32 uvm_perf_prefetch_prenotify_fault_migrations(uvm_va_block_t *va_blo
     if (UVM_ID_IS_CPU(new_residency) || va_block->gpus[uvm_id_gpu_index(new_residency)] != NULL)
         resident_mask = uvm_va_block_resident_mask_get(va_block, new_residency, NUMA_NO_NODE);
 
-    // If this is a first-touch fault and the destination processor is the
-    // preferred location, populate the whole max_prefetch_region.
+    // - If this is a first-touch fault and the destination processor is the
+    //   preferred location, populate the whole max_prefetch_region.
+    // - Do not prefetch pages out of the preferred location (policy location
+    //   is valid and does not match the new residency), unless confidential
+    //   computing is enabled.
     if (uvm_processor_mask_empty(&va_block->resident) &&
         uvm_id_equal(new_residency, policy->preferred_location)) {
         uvm_page_mask_region_fill(prefetch_pages, max_prefetch_region);
     }
-    else {
+    else if (should_apply_prefetch_logic(policy, new_residency, va_block, va_block_context, faulted_pages)) {
         init_bitmap_tree_from_region(bitmap_tree, max_prefetch_region, resident_mask, faulted_pages);
 
         update_bitmap_tree_from_va_block(bitmap_tree,

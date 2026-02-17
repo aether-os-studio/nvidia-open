@@ -170,7 +170,7 @@ struct OBJIOVASPACE {
 };
 
 
-// Vtable with 29 per-class function pointers
+// Vtable with 27 per-class function pointers
 struct NVOC_VTABLE__OBJIOVASPACE {
     NV_STATUS (*__iovaspaceConstruct___)(struct OBJIOVASPACE * /*this*/, NvU32, NvU32, NvU64, NvU64, NvU64, NvU64, NvU32);  // virtual override (vaspace) base (vaspace)
     NV_STATUS (*__iovaspaceAlloc__)(struct OBJIOVASPACE * /*this*/, NvU64, NvU64, NvU64, NvU64, NvU64, VAS_ALLOC_FLAGS, NvU64 *);  // virtual override (vaspace) base (vaspace)
@@ -187,13 +187,11 @@ struct NVOC_VTABLE__OBJIOVASPACE {
     OBJEHEAP * (*__iovaspaceGetHeap__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
     NvU64 (*__iovaspaceGetMapPageSize__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *, EMEMBLOCK *);  // inline virtual inherited (vaspace) base (vaspace) body
     NvU64 (*__iovaspaceGetBigPageSize__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
-    NvBool (*__iovaspaceIsMirrored__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
     NvBool (*__iovaspaceIsFaultCapable__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
     NvBool (*__iovaspaceIsExternallyOwned__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
     NvBool (*__iovaspaceIsAtsEnabled__)(struct OBJIOVASPACE * /*this*/);  // inline virtual inherited (vaspace) base (vaspace) body
     NV_STATUS (*__iovaspaceGetPasid__)(struct OBJIOVASPACE * /*this*/, NvU32 *);  // inline virtual inherited (vaspace) base (vaspace) body
     PMEMORY_DESCRIPTOR (*__iovaspaceGetPageDirBase__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *);  // inline virtual inherited (vaspace) base (vaspace) body
-    PMEMORY_DESCRIPTOR (*__iovaspaceGetKernelPageDirBase__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *);  // inline virtual inherited (vaspace) base (vaspace) body
     NV_STATUS (*__iovaspacePinRootPageDir__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *);  // inline virtual inherited (vaspace) base (vaspace) body
     void (*__iovaspaceUnpinRootPageDir__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *);  // inline virtual inherited (vaspace) base (vaspace) body
     void (*__iovaspaceInvalidateTlb__)(struct OBJIOVASPACE * /*this*/, struct OBJGPU *, VAS_PTE_UPDATE_TYPE);  // virtual inherited (vaspace) base (vaspace)
@@ -239,7 +237,40 @@ NV_STATUS __nvoc_objCreate_OBJIOVASPACE(OBJIOVASPACE**, Dynamic*, NvU32);
     __nvoc_objCreate_OBJIOVASPACE((ppNewObj), staticCast((pParent), Dynamic), (createFlags))
 
 
-// Wrapper macros
+// Wrapper macros for implementation functions
+void iovaspaceDestruct_IMPL(struct OBJIOVASPACE *pIOVAS);
+#define __nvoc_iovaspaceDestruct(pIOVAS) iovaspaceDestruct_IMPL(pIOVAS)
+
+NV_STATUS iovaspaceAcquireMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PMEMORY_DESCRIPTOR pIovaMapping);
+#ifdef __nvoc_io_vaspace_h_disabled
+static inline NV_STATUS iovaspaceAcquireMapping(struct OBJIOVASPACE *pIOVAS, PMEMORY_DESCRIPTOR pIovaMapping) {
+    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
+    return NV_ERR_NOT_SUPPORTED;
+}
+#else // __nvoc_io_vaspace_h_disabled
+#define iovaspaceAcquireMapping(pIOVAS, pIovaMapping) iovaspaceAcquireMapping_IMPL(pIOVAS, pIovaMapping)
+#endif // __nvoc_io_vaspace_h_disabled
+
+void iovaspaceReleaseMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping);
+#ifdef __nvoc_io_vaspace_h_disabled
+static inline void iovaspaceReleaseMapping(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping) {
+    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
+}
+#else // __nvoc_io_vaspace_h_disabled
+#define iovaspaceReleaseMapping(pIOVAS, pIovaMapping) iovaspaceReleaseMapping_IMPL(pIOVAS, pIovaMapping)
+#endif // __nvoc_io_vaspace_h_disabled
+
+void iovaspaceDestroyMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping);
+#ifdef __nvoc_io_vaspace_h_disabled
+static inline void iovaspaceDestroyMapping(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping) {
+    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
+}
+#else // __nvoc_io_vaspace_h_disabled
+#define iovaspaceDestroyMapping(pIOVAS, pIovaMapping) iovaspaceDestroyMapping_IMPL(pIOVAS, pIovaMapping)
+#endif // __nvoc_io_vaspace_h_disabled
+
+
+// Wrapper macros for halified functions
 #define iovaspaceConstruct__FNPTR(pVAS) pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceConstruct___
 #define iovaspaceConstruct_(pVAS, classId, vaspaceId, vaStart, vaLimit, vaStartInternal, vaLimitInternal, flags) iovaspaceConstruct__DISPATCH(pVAS, classId, vaspaceId, vaStart, vaLimit, vaStartInternal, vaLimitInternal, flags)
 #define iovaspaceAlloc_FNPTR(pVAS) pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceAlloc__
@@ -270,8 +301,6 @@ NV_STATUS __nvoc_objCreate_OBJIOVASPACE(OBJIOVASPACE**, Dynamic*, NvU32);
 #define iovaspaceGetMapPageSize(pVAS, pGpu, pMemBlock) iovaspaceGetMapPageSize_DISPATCH(pVAS, pGpu, pMemBlock)
 #define iovaspaceGetBigPageSize_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceGetBigPageSize__
 #define iovaspaceGetBigPageSize(pVAS) iovaspaceGetBigPageSize_DISPATCH(pVAS)
-#define iovaspaceIsMirrored_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceIsMirrored__
-#define iovaspaceIsMirrored(pVAS) iovaspaceIsMirrored_DISPATCH(pVAS)
 #define iovaspaceIsFaultCapable_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceIsFaultCapable__
 #define iovaspaceIsFaultCapable(pVAS) iovaspaceIsFaultCapable_DISPATCH(pVAS)
 #define iovaspaceIsExternallyOwned_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceIsExternallyOwned__
@@ -282,8 +311,6 @@ NV_STATUS __nvoc_objCreate_OBJIOVASPACE(OBJIOVASPACE**, Dynamic*, NvU32);
 #define iovaspaceGetPasid(pVAS, pPasid) iovaspaceGetPasid_DISPATCH(pVAS, pPasid)
 #define iovaspaceGetPageDirBase_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceGetPageDirBase__
 #define iovaspaceGetPageDirBase(pVAS, pGpu) iovaspaceGetPageDirBase_DISPATCH(pVAS, pGpu)
-#define iovaspaceGetKernelPageDirBase_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceGetKernelPageDirBase__
-#define iovaspaceGetKernelPageDirBase(pVAS, pGpu) iovaspaceGetKernelPageDirBase_DISPATCH(pVAS, pGpu)
 #define iovaspacePinRootPageDir_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspacePinRootPageDir__
 #define iovaspacePinRootPageDir(pVAS, pGpu) iovaspacePinRootPageDir_DISPATCH(pVAS, pGpu)
 #define iovaspaceUnpinRootPageDir_FNPTR(pVAS) pVAS->__nvoc_base_OBJVASPACE.__nvoc_metadata_ptr->vtable.__vaspaceUnpinRootPageDir__
@@ -360,10 +387,6 @@ static inline NvU64 iovaspaceGetBigPageSize_DISPATCH(struct OBJIOVASPACE *pVAS) 
     return pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceGetBigPageSize__(pVAS);
 }
 
-static inline NvBool iovaspaceIsMirrored_DISPATCH(struct OBJIOVASPACE *pVAS) {
-    return pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceIsMirrored__(pVAS);
-}
-
 static inline NvBool iovaspaceIsFaultCapable_DISPATCH(struct OBJIOVASPACE *pVAS) {
     return pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceIsFaultCapable__(pVAS);
 }
@@ -382,10 +405,6 @@ static inline NV_STATUS iovaspaceGetPasid_DISPATCH(struct OBJIOVASPACE *pVAS, Nv
 
 static inline PMEMORY_DESCRIPTOR iovaspaceGetPageDirBase_DISPATCH(struct OBJIOVASPACE *pVAS, struct OBJGPU *pGpu) {
     return pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceGetPageDirBase__(pVAS, pGpu);
-}
-
-static inline PMEMORY_DESCRIPTOR iovaspaceGetKernelPageDirBase_DISPATCH(struct OBJIOVASPACE *pVAS, struct OBJGPU *pGpu) {
-    return pVAS->__nvoc_metadata_ptr->vtable.__iovaspaceGetKernelPageDirBase__(pVAS, pGpu);
 }
 
 static inline NV_STATUS iovaspacePinRootPageDir_DISPATCH(struct OBJIOVASPACE *pVAS, struct OBJGPU *pGpu) {
@@ -431,40 +450,6 @@ NvU64 iovaspaceGetVaStart_IMPL(struct OBJIOVASPACE *pVAS);
 NvU64 iovaspaceGetVaLimit_IMPL(struct OBJIOVASPACE *pVAS);
 
 NV_STATUS iovaspaceGetVasInfo_IMPL(struct OBJIOVASPACE *pVAS, NV0080_CTRL_DMA_ADV_SCHED_GET_VA_CAPS_PARAMS *pParams);
-
-void iovaspaceDestruct_IMPL(struct OBJIOVASPACE *pIOVAS);
-
-#define __nvoc_iovaspaceDestruct(pIOVAS) iovaspaceDestruct_IMPL(pIOVAS)
-NV_STATUS iovaspaceAcquireMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PMEMORY_DESCRIPTOR pIovaMapping);
-
-#ifdef __nvoc_io_vaspace_h_disabled
-static inline NV_STATUS iovaspaceAcquireMapping(struct OBJIOVASPACE *pIOVAS, PMEMORY_DESCRIPTOR pIovaMapping) {
-    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
-    return NV_ERR_NOT_SUPPORTED;
-}
-#else //__nvoc_io_vaspace_h_disabled
-#define iovaspaceAcquireMapping(pIOVAS, pIovaMapping) iovaspaceAcquireMapping_IMPL(pIOVAS, pIovaMapping)
-#endif //__nvoc_io_vaspace_h_disabled
-
-void iovaspaceReleaseMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping);
-
-#ifdef __nvoc_io_vaspace_h_disabled
-static inline void iovaspaceReleaseMapping(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping) {
-    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
-}
-#else //__nvoc_io_vaspace_h_disabled
-#define iovaspaceReleaseMapping(pIOVAS, pIovaMapping) iovaspaceReleaseMapping_IMPL(pIOVAS, pIovaMapping)
-#endif //__nvoc_io_vaspace_h_disabled
-
-void iovaspaceDestroyMapping_IMPL(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping);
-
-#ifdef __nvoc_io_vaspace_h_disabled
-static inline void iovaspaceDestroyMapping(struct OBJIOVASPACE *pIOVAS, PIOVAMAPPING pIovaMapping) {
-    NV_ASSERT_FAILED_PRECOMP("OBJIOVASPACE was disabled!");
-}
-#else //__nvoc_io_vaspace_h_disabled
-#define iovaspaceDestroyMapping(pIOVAS, pIovaMapping) iovaspaceDestroyMapping_IMPL(pIOVAS, pIovaMapping)
-#endif //__nvoc_io_vaspace_h_disabled
 
 #undef PRIVATE_FIELD
 

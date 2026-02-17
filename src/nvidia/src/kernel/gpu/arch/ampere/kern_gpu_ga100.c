@@ -29,7 +29,6 @@
 #include "published/ampere/ga100/dev_fb.h"
 #include "published/ampere/ga100/dev_vm.h"
 #include "published/ampere/ga100/dev_fuse.h"
-#include "published/ampere/ga100/dev_top.h"
 #include "virtualization/hypervisor/hypervisor.h"
 
 /*!
@@ -69,6 +68,8 @@ gpuClearFbhubPoisonIntrForBug2924523_GA100
     // Check if FBHUB Poison interrupt got triggered before RM Init due
     // to VBIOS IFR on GA100. If yes, clear the FBHUB Interrupt. This WAR is
     // required for Bug 2924523 as VBIOS IFR causes FBHUB Poison intr.
+    // We can't use intrServiceStall or intrIsPending_HAL here because interrupt table
+    // is not initialized.
     //
     if (intrIsVectorPending_HAL(pGpu, GPU_GET_INTR(pGpu), intrVector, NULL))
     {

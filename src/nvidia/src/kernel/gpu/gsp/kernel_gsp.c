@@ -24,6 +24,7 @@
 #include "resserv/rs_server.h"
 
 #include "gpu/gsp/kernel_gsp.h"
+#include "gpu/falcon/kernel_falcon.h"
 
 #include "kernel/core/thread_state.h"
 #include "kernel/core/locks.h"
@@ -39,7 +40,6 @@
 #include "kernel/gpu/mem_sys/kern_mem_sys.h"
 #include "kernel/gpu/rc/kernel_rc.h"
 #include "kernel/gpu/nvlink/kernel_nvlink.h"
-#include "virtualization/hypervisor/hypervisor.h"
 #include "virtualization/vgpuconfigapi.h"
 #include "kernel/gpu/disp/kern_disp.h"
 #include "kernel/gpu/mig_mgr/kernel_mig_manager.h"
@@ -66,7 +66,7 @@
 #include "kernel/gpu/pmu/kern_pmu.h"
 #include "gpu/perf/kern_perf.h"
 #include "core/locks.h"
-#include "kernel/gpu/intr/intr.h"
+#include "kernel/gpu/intr/intr_service.h"
 #include "kernel/gpu/gr/fecs_event_list.h"
 #include "lib/protobuf/prb_util.h"
 #include "g_nvdebug_pb.h"
@@ -91,8 +91,10 @@
 #include "gpu/conf_compute/conf_compute.h"
 
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-#include "diagnostics/code_coverage_mgr.h"
+#include "diagnostics/instrumentation_manager.h"
 #endif
+
+#include "crashcat/crashcat_report.h"
 
 #define RPC_HDR  ((rpc_message_header_v*)(pRpc->message_buffer))
 
@@ -109,6 +111,18 @@ typedef struct
     NvU32 grIdx;
     FECS_ERROR_EVENT_TYPE errorType;
 } FECS_ERROR_REPORT;
+
+typedef struct
+{
+    NvU32 gfid;
+    const char *szMemoryId;
+    const char *szPrefix;
+    const char *elfSectionName;
+    NvU64 bufOffset;
+    NvU64 bufSize;
+    RM_LIBOS_LOG_MEM *taskLogArr;
+    NvBool bMergeNvlog;
+} LOG_VGPU_SETUP_PARAMS;
 
 //
 // RPC_PARAMS defines the rpc_params pointer and initializes it to the correct
@@ -130,9 +144,9 @@ static void _kgspFreeRpcInfrastructure(OBJGPU *, KernelGsp *);
 
 static NV_STATUS _kgspConstructRpcObject(OBJGPU *, KernelGsp *, MESSAGE_QUEUE_INFO *, OBJRPC **);
 
-static NV_STATUS _kgspRpcSendMessage(OBJGPU *, OBJRPC *);
-static NV_STATUS _kgspRpcRecvPoll(OBJGPU *, OBJRPC *, NvU32);
-static NV_STATUS _kgspRpcDrainEvents(OBJGPU *, KernelGsp *, NvU32, KernelGspRpcEventHandlerContext);
+static NV_STATUS _kgspRpcSendMessage(OBJGPU *, OBJRPC *, NvU32 *);
+static NV_STATUS _kgspRpcRecvPoll(OBJGPU *, OBJRPC *, NvU32, NvU32);
+static NV_STATUS _kgspRpcDrainEvents(OBJGPU *, KernelGsp *, NvU32, NvU32, KernelGspRpcEventHandlerContext);
 static void      _kgspRpcIncrementTimeoutCountAndRateLimitPrints(OBJGPU *, OBJRPC *);
 
 static NV_STATUS _kgspAllocSimAccessBuffer(OBJGPU *pGpu, KernelGsp *pKernelGsp);
@@ -167,6 +181,10 @@ static NV_STATUS _kgspRpcGspEventFecsError(OBJGPU *, OBJRPC *);
 static void _kgspRpcGspEventHandleFecsBufferError(NvU32, void *);
 
 static NV_STATUS _kgspRpcGspEventRecoveryAction(OBJGPU *, OBJRPC *);
+
+static NV_STATUS _kgspRpcGspTriggerBugcheck(OBJGPU *, OBJRPC *);
+
+static void _kgspRpcGspForcedDriverShutdown(OBJGPU *);
 
 static void _kgspInitGpuProperties(OBJGPU *);
 static NV_STATUS _kgspDumpEngineFunc(OBJGPU*, PRB_ENCODER*, NVD_STATE*, void*);
@@ -317,12 +335,14 @@ _kgspAddRpcHistoryEntry
 )
 {
     NvU32 func = RPC_HDR->function;
+    NvU32 sequence = RPC_HDR->sequence;
     NvU32 entry;
 
     entry = *pCurrent = (*pCurrent + 1) % RPC_HISTORY_DEPTH;
 
     portMemSet(&pHistory[entry], 0, sizeof(pHistory[0]));
     pHistory[entry].function = func;
+    pHistory[entry].sequence = sequence;
     pHistory[entry].ts_start = osGetTimestamp();
 
     _kgspGetActiveRpcDebugData(pRpc, func,
@@ -372,7 +392,8 @@ static NV_STATUS
 _kgspRpcSendMessage
 (
     OBJGPU *pGpu,
-    OBJRPC *pRpc
+    OBJRPC *pRpc,
+    NvU32 *pSequence
 )
 {
     NV_STATUS nvStatus;
@@ -380,6 +401,11 @@ _kgspRpcSendMessage
     NvU32 gpuMaskUnused;
 
     NV_ASSERT(rmGpuGroupLockIsOwner(pGpu->gpuInstance, GPU_LOCK_GRP_SUBDEVICE, &gpuMaskUnused));
+
+    if (pSequence)
+        vgpu_rpc_message_header_v->sequence = *pSequence = pRpc->sequence++;
+    else
+        vgpu_rpc_message_header_v->sequence = 0;
 
     NV_CHECK_OK_OR_RETURN(LEVEL_SILENT, _kgspRpcSanityCheck(pGpu, pKernelGsp, pRpc));
 
@@ -464,35 +490,57 @@ _kgspRpcPostEvent
 )
 {
     RPC_PARAMS(post_event, _v17_00);
-    PEVENTNOTIFICATION pNotifyList  = NULL;
-    PEVENTNOTIFICATION pNotifyEvent = NULL;
-    Event             *pEvent       = NULL;
-    NV_STATUS          nvStatus     = NV_OK;
+    EVENTNOTIFICATION *pNotifyList  = NULL;
+    EVENTNOTIFICATION *pNotifyEvent = NULL;
+    Event *pEvent = NULL;
+    NvU32 notifyClassId;
 
     // Get the notification list that contains this event.
     NV_ASSERT_OR_RETURN(CliGetEventInfo(rpc_params->hClient,
         rpc_params->hEvent, &pEvent), NV_ERR_OBJECT_NOT_FOUND);
 
-    if (pEvent->pNotifierShare != NULL)
-        pNotifyList = pEvent->pNotifierShare->pEventList;
+    NV_ASSERT_OR_RETURN(pEvent->pNotifierShare != NULL, NV_ERR_INVALID_POINTER);
 
-    NV_ASSERT_OR_RETURN(pNotifyList != NULL, NV_ERR_INVALID_POINTER);
+    pNotifyList = pEvent->pNotifierShare->pEventList;
+    notifyClassId = objGetClassId(pEvent->pNotifierShare->pNotifier);
 
-    switch (rpc_params->notifyIndex)
+    switch (notifyClassId)
     {
-        case NV2080_NOTIFIERS_ECC_DBE:
-            _kgspProcessEccNotifier(pGpu, rpc_params->eventData);
+        case classId(Subdevice):
+        {
+            switch (rpc_params->notifyIndex)
+            {
+                case NV2080_NOTIFIERS_ECC_DBE:
+                {
+                    _kgspProcessEccNotifier(pGpu, rpc_params->eventData);
+                    break;
+                }
+            }
             break;
+        }
     }
 
     // Send the event.
     if (rpc_params->bNotifyList)
     {
         // Send notification to all matching events on the list.
+        if (notifyClassId == classId(Subdevice))
         {
+            // Subdevice notifications might require additional handling
             gpuNotifySubDeviceEvent(pGpu, rpc_params->notifyIndex,
                 rpc_params->eventData, rpc_params->eventDataSize,
                 rpc_params->data, rpc_params->info16);
+        }
+        else
+        {
+            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+                osEventNotificationWithInfo(pGpu,
+                    pNotifyList,
+                    rpc_params->notifyIndex,
+                    rpc_params->data,
+                    rpc_params->info16,
+                    rpc_params->eventData,
+                    rpc_params->eventDataSize));
         }
     }
     else
@@ -502,15 +550,15 @@ _kgspRpcPostEvent
         {
             if (pNotifyEvent->hEvent == rpc_params->hEvent)
             {
-                nvStatus = osNotifyEvent(pGpu, pNotifyEvent, 0,
-                                         rpc_params->data, rpc_params->status);
+                NV_ASSERT_OK_OR_RETURN(osNotifyEvent(pGpu,
+                    pNotifyEvent, 0, rpc_params->data, rpc_params->status));
                 break;
             }
         }
         NV_ASSERT_OR_RETURN(pNotifyEvent != NULL, NV_ERR_OBJECT_NOT_FOUND);
     }
 
-    return nvStatus;
+    return NV_OK;
 }
 
 /*!
@@ -650,89 +698,6 @@ _kgspRpcRCTriggered
         rpc_params->partitionAttributionId,
         NV_FALSE                 // unused on kernel side
         );
-}
-
-/*!
- * This function is called on critical FW crash to RC and notify an error code to
- * all user mode channels, allowing the user mode apps to fail deterministically.
- *
- * @param[in] pGpu                 GPU object pointer
- * @param[in] pKernelGsp           KernelGsp object pointer
- * @param[in] exceptType           Error code to send to the RC notifiers
- * @param[in] bSkipKernelChannels  Don't RC and notify kernel channels
- *
- */
-void
-kgspRcAndNotifyAllChannels_IMPL
-(
-    OBJGPU    *pGpu,
-    KernelGsp *pKernelGsp,
-    NvU32      exceptType,
-    NvBool     bSkipKernelChannels
-)
-{
-    //
-    // Note Bug 4503046: UVM currently attributes all errors as global and fails
-    // operations on all GPUs, in addition to the current failing GPU. Right now, the only
-    // case where we shouldn't skip kernel channels is when the GPU has fallen off the bus.
-    //
-
-    KernelRc         *pKernelRc = GPU_GET_KERNEL_RC(pGpu);
-    KernelChannel    *pKernelChannel;
-    KernelFifo       *pKernelFifo = GPU_GET_KERNEL_FIFO(pGpu);
-    CHANNEL_ITERATOR  chanIt;
-    RMTIMEOUT         timeout;
-
-    NV_PRINTF(LEVEL_ERROR, "RC all %schannels for critical error %d.\n",
-              bSkipKernelChannels ? MAKE_NV_PRINTF_STR("user ") : MAKE_NV_PRINTF_STR(""),
-              exceptType);
-
-    // Pass 1: halt all channels.
-    kfifoGetChannelIterator(pGpu, pKernelFifo, &chanIt, INVALID_RUNLIST_ID);
-    while (kfifoGetNextKernelChannel(pGpu, pKernelFifo, &chanIt, &pKernelChannel) == NV_OK)
-    {
-        if (kchannelCheckIsKernel(pKernelChannel) && bSkipKernelChannels)
-        {
-            continue;
-        }
-
-        kfifoStartChannelHalt(pGpu, pKernelFifo, pKernelChannel);
-    }
-
-    //
-    // Pass 2: Wait for the halts to complete, and RC notify the channels.
-    // The channel halts require a preemption, which may not be able to complete
-    // since the GSP is no longer servicing interrupts. Wait for up to the
-    // default GPU timeout value for the preemptions to complete.
-    //
-    gpuSetTimeout(pGpu, GPU_TIMEOUT_DEFAULT, &timeout, 0);
-    kfifoGetChannelIterator(pGpu, pKernelFifo, &chanIt, INVALID_RUNLIST_ID);
-    while (kfifoGetNextKernelChannel(pGpu, pKernelFifo, &chanIt, &pKernelChannel) == NV_OK)
-    {
-        if (kchannelCheckIsKernel(pKernelChannel) && bSkipKernelChannels)
-        {
-            continue;
-        }
-
-        kfifoCompleteChannelHalt(pGpu, pKernelFifo, pKernelChannel, &timeout);
-
-        NV_ASSERT_OK(
-            krcErrorSetNotifier(pGpu, pKernelRc,
-                                pKernelChannel,
-                                exceptType,
-                                kchannelGetEngineType(pKernelChannel),
-                                RC_NOTIFIER_SCOPE_CHANNEL));
-
-        NV_ASSERT_OK(
-            krcErrorSendEventNotifications_HAL(pGpu, pKernelRc,
-                                               pKernelChannel,
-                                               kchannelGetEngineType(pKernelChannel),
-                                               0,
-                                               exceptType,
-                                               RC_NOTIFIER_SCOPE_CHANNEL,
-                                               0,
-                                               NV_FALSE));
-    }
 }
 
 /*!
@@ -1257,10 +1222,13 @@ _kgspRpcMigCiConfigUpdate
                 rpc_params->execPartId, (sizeof(NvU32) * rpc_params->execPartCount));
     pParams->gfid = rpc_params->gfid;
     pParams->bDelete = rpc_params->bDelete;
-    status = osQueueWorkItemWithFlags(pGpu,
-                                      _kgspRpcMigCiConfigUpdateCallback,
-                                      (void *)pParams,
-                                      OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RW | OS_QUEUE_WORKITEM_FLAGS_LOCK_GPUS);
+
+    status = osQueueWorkItem(pGpu,
+                             _kgspRpcMigCiConfigUpdateCallback,
+                             (void *)pParams,
+                             (OsQueueWorkItemFlags){
+                                 .apiLock = WORKITEM_FLAGS_API_LOCK_READ_WRITE,
+                                 .bLockGpus = NV_TRUE});
     if (status != NV_OK)
     {
         portMemFree(pParams);
@@ -1580,6 +1548,14 @@ _kgspProcessRpcEvent
             nvStatus = _kgspRpcGspEventRecoveryAction(pGpu, pRpc);
             break;
 
+        case NV_VGPU_MSG_EVENT_TRIGGER_BUGCHECK:
+            nvStatus = _kgspRpcGspTriggerBugcheck(pGpu, pRpc);
+            break;
+
+        case NV_VGPU_MSG_EVENT_FORCED_DRIVER_SHUTDOWN:
+            _kgspRpcGspForcedDriverShutdown(pGpu);
+            break;
+
         case NV_VGPU_MSG_EVENT_GSP_INIT_DONE:   // Handled by _kgspRpcRecvPoll.
         default:
             //
@@ -1589,8 +1565,8 @@ _kgspProcessRpcEvent
             // eventually comes in as an unexpected event.  The error handling
             // for the timeout should have already happened.
             //
-            NV_PRINTF(LEVEL_ERROR, "Unexpected RPC event from GPU%d: 0x%x (%s)\n",
-                      gpuGetInstance(pGpu), event, _getRpcName(event));
+            NV_PRINTF(LEVEL_ERROR, "Unexpected RPC event from GPU%d: 0x%x (%s), sequence: %u\n",
+                      gpuGetInstance(pGpu), event, _getRpcName(event), pMsgHdr->sequence);
             break;
     }
 
@@ -1635,11 +1611,13 @@ _kgspRpcGspEventFecsError
 
             pErrorReport->grIdx = rpc_params->grIdx;
             pErrorReport->errorType = rpc_params->error_type;
-            status = osQueueWorkItemWithFlags(pGpu,
-                                              _kgspRpcGspEventHandleFecsBufferError,
-                                              pErrorReport,
-                                              OS_QUEUE_WORKITEM_FLAGS_LOCK_API_RO |
-                                              OS_QUEUE_WORKITEM_FLAGS_LOCK_GPU_GROUP_SUBDEVICE);
+
+            status = osQueueWorkItem(pGpu,
+                _kgspRpcGspEventHandleFecsBufferError,
+                pErrorReport,
+                (OsQueueWorkItemFlags) {
+                    .apiLock = WORKITEM_FLAGS_API_LOCK_READ_ONLY,
+                    .bLockGpuGroupSubdevice = NV_TRUE});
 
             if (status != NV_OK)
                 portMemFree(pErrorReport);
@@ -1694,6 +1672,39 @@ _kgspRpcGspEventRecoveryAction
     return status;
 }
 
+static void
+_kgspRpcGspForcedDriverShutdown(OBJGPU *pGpu)
+{
+    KernelGsp *pKernelGsp = GPU_GET_KERNEL_GSP(pGpu);
+    //
+    // We received a forced driver shutdown event from GSP-RM.
+    // This means that GSP will be shutting down after a GSP RM error injection test.
+    // Do not attempt sending RPCs to GSP after this point, and mark the GPU for reset.
+    //
+    NV_PRINTF(LEVEL_ERROR,
+        "Forcing driver shutdown by error injection test, marking GPU%d for reset!\n",
+        gpuGetInstance(pGpu));
+    gpuMarkDeviceForReset(pGpu);
+    pKernelGsp->bFatalError = NV_TRUE;
+}
+
+static NV_STATUS
+_kgspRpcGspTriggerBugcheck
+(
+    OBJGPU *pGpu,
+    OBJRPC *pRpc
+)
+{
+    NV_STATUS status = NV_OK;
+    RPC_PARAMS(trigger_bugcheck, _v01_00);
+    NV_PRINTF(LEVEL_ERROR,
+              "Received signal from GSP to trigger bugcheck! BugCode=0x%x\n",
+              rpc_params->bugCode);
+
+    osBugCheck(rpc_params->bugCode);
+    return status;
+}
+
 /*!
  * Processes the callback for the FECS buffer error notifications
  *
@@ -1728,6 +1739,7 @@ _kgspRpcDrainOneEvent
     OBJGPU          *pGpu,
     OBJRPC          *pRpc,
     NvU32            expectedFunc,
+    NvU32            expectedSequence,
     KernelGspRpcEventHandlerContext rpcHandlerContext
 )
 {
@@ -1744,8 +1756,11 @@ _kgspRpcDrainOneEvent
     {
         rpc_message_header_v *pMsgHdr = RPC_HDR;
 
-        if (pMsgHdr->function == expectedFunc)
+        if (pMsgHdr->function == expectedFunc &&
+            pMsgHdr->sequence == expectedSequence)
+        {
             return NV_WARN_MORE_PROCESSING_REQUIRED;
+        }
 
         _kgspProcessRpcEvent(pGpu, pRpc, rpcHandlerContext);
     }
@@ -1778,6 +1793,7 @@ _kgspRpcDrainEvents
     OBJGPU    *pGpu,
     KernelGsp *pKernelGsp,
     NvU32      expectedFunc,
+    NvU32      expectedSequence,
     KernelGspRpcEventHandlerContext rpcHandlerContext
 )
 {
@@ -1786,7 +1802,7 @@ _kgspRpcDrainEvents
 
     while (nvStatus == NV_OK)
     {
-        nvStatus = _kgspRpcDrainOneEvent(pGpu, pRpc, expectedFunc, rpcHandlerContext);
+        nvStatus = _kgspRpcDrainOneEvent(pGpu, pRpc, expectedFunc, expectedSequence, rpcHandlerContext);
         kgspDumpGspLogs(pKernelGsp, NV_FALSE);
     }
 
@@ -1881,11 +1897,12 @@ _kgspLogRpcHistoryEntry
             duration = _tsDiffToDuration(duration, &durationUnitsChar);
 
             NV_ERROR_LOG_DATA(pGpu, errorNum,
-                              "    %c%-4d %-4d %-21.21s 0x%016llx 0x%016llx 0x%016llx 0x%016llx %6llu%cs %c\n",
+                              "    %c%-4d %-4d %-21.21s %10u 0x%016llx 0x%016llx 0x%016llx 0x%016llx %6llu%cs %c\n",
                               ((historyIndex == 0) ? ' ' : '-'),
                               historyIndex,
                               pEntry->function,
                               _getRpcName(pEntry->function),
+                              pEntry->sequence,
                               pEntry->data[0],
                               pEntry->data[1],
                               pEntry->ts_start,
@@ -1896,11 +1913,12 @@ _kgspLogRpcHistoryEntry
         else
         {
             NV_ERROR_LOG_DATA(pGpu, errorNum,
-                              "    %c%-4d %-4d %-21.21s 0x%016llx 0x%016llx 0x%016llx 0x%016llx          %c\n",
+                              "    %c%-4d %-4d %-21.21s %10u 0x%016llx 0x%016llx 0x%016llx 0x%016llx          %c\n",
                               ((historyIndex == 0) ? ' ' : '-'),
                               historyIndex,
                               pEntry->function,
                               _getRpcName(pEntry->function),
+                              pEntry->sequence,
                               pEntry->data[0],
                               pEntry->data[1],
                               pEntry->ts_start,
@@ -1926,6 +1944,9 @@ kgspLogRpcDebugInfoToProtobuf
     NvU32  historyEntry;
     RpcHistoryEntry *pEntry = NULL;
     const NvU32 rpcEntriesToLog = (RPC_HISTORY_DEPTH > 8) ? 8 : RPC_HISTORY_DEPTH;
+    const NvU64 tsFreqUs = osGetTimestampFreq() / 1000000;
+
+    NV_ASSERT_OR_RETURN_VOID(tsFreqUs > 0);
 
     prbEncAddUInt32(pProtobufData, GSP_XIDREPORT_GPUINSTANCE, gpuGetInstance(pGpu));
 
@@ -1963,13 +1984,14 @@ kgspLogRpcDebugInfoToProtobuf
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_HISTORYINDEX, historyIndex);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_FUNCTION, pEntry->function);
                 prbEncAddString(pProtobufData, GSP_RPCENTRY_RPCNAME, _getRpcName(pEntry->function));
+                prbEncAddUInt32(pProtobufData, GSP_RPCENTRY_SEQUENCE, pEntry->sequence);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DATA0, pEntry->data[0]);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DATA1, pEntry->data[1]);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_STARTTIMESTAMP, pEntry->ts_start);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_ENDTIMESTAMP, pEntry->ts_end);
                 if (pEntry->ts_end > pEntry->ts_start)
                 {
-                    prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DURATION, pEntry->ts_end > pEntry->ts_start);
+                    prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DURATION, (pEntry->ts_end - pEntry->ts_start) / tsFreqUs);
                 }
                 prbEncNestedEnd(pProtobufData);
             }
@@ -1990,13 +2012,14 @@ kgspLogRpcDebugInfoToProtobuf
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_HISTORYINDEX, historyIndex);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_FUNCTION, pEntry->function);
                 prbEncAddString(pProtobufData, GSP_RPCENTRY_RPCNAME, _getRpcName(pEntry->function));
+                prbEncAddUInt32(pProtobufData, GSP_RPCENTRY_SEQUENCE, pEntry->sequence);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DATA0, pEntry->data[0]);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DATA1, pEntry->data[1]);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_STARTTIMESTAMP, pEntry->ts_start);
                 prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_ENDTIMESTAMP, pEntry->ts_end);
                 if (pEntry->ts_end > pEntry->ts_start)
                 {
-                    prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DURATION, pEntry->ts_end - pEntry->ts_start);
+                    prbEncAddUInt64(pProtobufData, GSP_RPCENTRY_DURATION, (pEntry->ts_end - pEntry->ts_start) / tsFreqUs);
                 }
                 prbEncNestedEnd(pProtobufData);
             }
@@ -2024,16 +2047,16 @@ kgspLogRpcDebugInfo
     _kgspGetActiveRpcDebugData(pRpc, pMsgHdr->function,
                                &activeData[0], &activeData[1]);
     NV_ERROR_LOG_DATA(pGpu, errorNum,
-                      "GPU%d GSP RPC buffer contains function %d (%s) and data 0x%016llx 0x%016llx.\n",
+                      "GPU%d GSP RPC buffer contains function %d (%s) sequence %u and data 0x%016llx 0x%016llx.\n",
                       gpuGetInstance(pGpu),
-                      pMsgHdr->function, _getRpcName(pMsgHdr->function),
+                      pMsgHdr->function, _getRpcName(pMsgHdr->function), pMsgHdr->sequence,
                       activeData[0], activeData[1]);
 
     NV_ERROR_LOG_DATA(pGpu, errorNum,
                       "GPU%d RPC history (CPU -> GSP):\n",
                       gpuGetInstance(pGpu));
     NV_ERROR_LOG_DATA(pGpu, errorNum,
-                      "    entry function                   data0              data1              ts_start           ts_end             duration actively_polling\n");
+                      "    entry function                     sequence data0              data1              ts_start           ts_end             duration actively_polling\n");
     for (historyIndex = 0; historyIndex < rpcEntriesToLog; historyIndex++)
     {
         historyEntry = (pRpc->rpcHistoryCurrent + RPC_HISTORY_DEPTH - historyIndex) % RPC_HISTORY_DEPTH;
@@ -2045,7 +2068,7 @@ kgspLogRpcDebugInfo
                       "GPU%d RPC event history (CPU <- GSP):\n",
                       gpuGetInstance(pGpu));
     NV_ERROR_LOG_DATA(pGpu, errorNum,
-                      "    entry function                   data0              data1              ts_start           ts_end             duration during_incomplete_rpc\n");
+                      "    entry function                     sequence data0              data1              ts_start           ts_end             duration during_incomplete_rpc\n");
     for (historyIndex = 0; historyIndex < rpcEntriesToLog; historyIndex++)
     {
         historyEntry = (pRpc->rpcEventHistoryCurrent + RPC_HISTORY_DEPTH - historyIndex) % RPC_HISTORY_DEPTH;
@@ -2057,6 +2080,53 @@ kgspLogRpcDebugInfo
 }
 
 /*!
+ * Log slow RPC to nvlog and nocat
+ */
+static void
+_kgspCheckSlowRpc
+(
+    OBJGPU *pGpu,
+    OBJRPC *pRpc
+)
+{
+    RpcHistoryEntry *pHistoryEntry = &pRpc->rpcHistory[pRpc->rpcHistoryCurrent];
+    NvU64 duration;
+    KernelGsp *pKernelGsp = GPU_GET_KERNEL_GSP(pGpu);
+    const NvU64 tsFreqUs = osGetTimestampFreq() / 1000000;
+
+    NV_ASSERT_OR_RETURN_VOID(tsFreqUs > 0);
+
+    duration = (pHistoryEntry->ts_end - pHistoryEntry->ts_start) / tsFreqUs;
+
+    if (duration > SLOW_RPC_THRESHOLD_US)
+    {
+        NV_PRINTF(LEVEL_WARNING, "Slow RPC response from GPU%d GSP (%lluus). Function %d (%s) sequence %u (0x%llx 0x%llx).\n",
+                    gpuGetInstance(pGpu),
+                    duration,
+                    pHistoryEntry->function,
+                    _getRpcName(pHistoryEntry->function),
+                    pHistoryEntry->sequence,
+                    pHistoryEntry->data[0],
+                    pHistoryEntry->data[1]);
+
+        kgspInitNocatData(pGpu, pKernelGsp, GSP_NOCAT_GSP_RPC_PERF);
+        prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCPERF_GPUINSTANCE, gpuGetInstance(pGpu));
+        prbEncAddString(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCPERF_MSG, "Slow RPC response from GSP!");
+
+        prbEncNestedStart(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCPERF_ACTIVERPC);
+        prbEncAddUInt64(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_FUNCTION, pHistoryEntry->function);
+        prbEncAddString(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_RPCNAME, _getRpcName(pHistoryEntry->function));
+        prbEncAddUInt64(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_DURATION, duration);
+        prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_SEQUENCE, pHistoryEntry->sequence);
+        prbEncAddUInt64(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_DATA0, pHistoryEntry->data[0]);
+        prbEncAddUInt64(&pKernelGsp->nocatData.nocatBuffer, GSP_RPCENTRY_DATA1, pHistoryEntry->data[1]);
+        prbEncNestedEnd(&pKernelGsp->nocatData.nocatBuffer);
+
+        kgspPostNocatData(pGpu, pKernelGsp, osGetTimestamp());
+    }
+}
+
+/*!
  * Log Xid 119 - GSP RPC Timeout
  */
 static void
@@ -2064,7 +2134,8 @@ _kgspLogXid119
 (
     OBJGPU *pGpu,
     OBJRPC *pRpc,
-    NvU32 expectedFunc
+    NvU32 expectedFunc,
+    NvU32 expectedSequence
 )
 {
     RpcHistoryEntry *pHistoryEntry = &pRpc->rpcHistory[pRpc->rpcHistoryCurrent];
@@ -2072,6 +2143,7 @@ _kgspLogXid119
     NvU64 duration;
     char  durationUnitsChar;
     KernelGsp *pKernelGsp = GPU_GET_KERNEL_GSP(pGpu);
+    KernelFalcon *pKernelFlcn = staticCast(pKernelGsp, KernelFalcon);
 
     if (pRpc->timeoutCount == 1)
     {
@@ -2087,11 +2159,12 @@ _kgspLogXid119
     duration = _tsDiffToDuration(ts_end - pHistoryEntry->ts_start, &durationUnitsChar);
 
     NV_ERROR_LOG(pGpu, GSP_RPC_TIMEOUT,
-                 "Timeout after %llus of waiting for RPC response from GPU%d GSP! Expected function %d (%s) (0x%llx 0x%llx).",
+                 "Timeout after %llus of waiting for RPC response from GPU%d GSP! Expected function %d (%s) sequence %u (0x%llx 0x%llx).",
                  (durationUnitsChar == 'm' ? duration / 1000 : duration),
                  gpuGetInstance(pGpu),
                  expectedFunc,
                  _getRpcName(expectedFunc),
+                 expectedSequence,
                  pHistoryEntry->data[0],
                  pHistoryEntry->data[1]);
 
@@ -2099,16 +2172,37 @@ _kgspLogXid119
 
     if (pRpc->timeoutCount == 1)
     {
+        if (pKernelGsp->pWatchdogReport != NULL)
+        {
+            kgspPrintGspBinBuildId(pGpu, pKernelGsp);
+            crashcatReportLog(pKernelGsp->pWatchdogReport);
+            kgspPostCrashcatReportToNocat(pGpu, pKernelGsp, pKernelGsp->pWatchdogReport, GSP_RPC_TIMEOUT);
+            objDelete(pKernelGsp->pWatchdogReport);
+            pKernelGsp->pWatchdogReport = NULL;
+        }
         kgspInitNocatData(pGpu, pKernelGsp, GSP_NOCAT_GSP_RPC_TIMEOUT);
-        prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_XIDREPORT_XID, 119);
+        prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_XIDREPORT_XID, GSP_RPC_TIMEOUT);
         kgspLogRpcDebugInfoToProtobuf(pGpu, pRpc, pKernelGsp, &pKernelGsp->nocatData.nocatBuffer);
         kgspPostNocatData(pGpu, pKernelGsp, osGetTimestamp());
 
         kgspLogRpcDebugInfo(pGpu, pRpc, GSP_RPC_TIMEOUT, NV_TRUE/*bPollingForRpcResponse*/);
         osAssertFailed();
 
+        //
+        // Dump registers / core state, non-destructively here.
+        // On production boards, ICD dump cannot be done because halt is final.
+        // Do not print this if we already consider GSP dead (prevents spam overload)
+        //
+        kgspDumpMailbox_HAL(pGpu, pKernelGsp);
+        kflcnCoreDumpNondestructive(pGpu, pKernelFlcn, 2);
+
         NV_PRINTF(LEVEL_ERROR,
                   "********************************************************************************\n");
+    }
+    else
+    {
+        kgspDumpMailbox_HAL(pGpu, pKernelGsp);             // Always dump mailboxes
+        kflcnCoreDumpNondestructive(pGpu, pKernelFlcn, 0); // simple version
     }
 }
 
@@ -2118,7 +2212,8 @@ _kgspLogRpcSanityCheckFailure
     OBJGPU *pGpu,
     OBJRPC *pRpc,
     NvU32 rpcStatus,
-    NvU32 expectedFunc
+    NvU32 expectedFunc,
+    NvU32 expectedSequence
 )
 {
     RpcHistoryEntry *pHistoryEntry = &pRpc->rpcHistory[pRpc->rpcHistoryCurrent];
@@ -2126,11 +2221,12 @@ _kgspLogRpcSanityCheckFailure
     NV_ASSERT(expectedFunc == pHistoryEntry->function);
 
     NV_PRINTF(LEVEL_ERROR,
-              "GPU%d sanity check failed 0x%x waiting for RPC response from GSP. Expected function %d (%s) (0x%llx 0x%llx).\n",
+              "GPU%d sanity check failed 0x%x waiting for RPC response from GSP. Expected function %d (%s) sequence %u (0x%llx 0x%llx).\n",
               gpuGetInstance(pGpu),
               rpcStatus,
               expectedFunc,
               _getRpcName(expectedFunc),
+              expectedSequence,
               pHistoryEntry->data[0],
               pHistoryEntry->data[1]);
 
@@ -2177,10 +2273,12 @@ _kgspRpcRecvPoll
 (
     OBJGPU *pGpu,
     OBJRPC *pRpc,
-    NvU32   expectedFunc
+    NvU32   expectedFunc,
+    NvU32   expectedSequence
 )
 {
     KernelGsp *pKernelGsp = GPU_GET_KERNEL_GSP(pGpu);
+    KernelDisplay *pKernelDisplay = GPU_GET_KERNEL_DISPLAY(pGpu);
     NV_STATUS  rpcStatus = NV_OK;
     NV_STATUS  timeoutStatus = NV_OK;
     RMTIMEOUT  timeout;
@@ -2270,13 +2368,23 @@ _kgspRpcRecvPoll
         //
         timeoutStatus = gpuCheckTimeout(pGpu, &timeout);
 
-        rpcStatus = _kgspRpcDrainEvents(pGpu, pKernelGsp, expectedFunc, rpcHandlerContext);
+        rpcStatus = _kgspRpcDrainEvents(pGpu, pKernelGsp, expectedFunc, expectedSequence, rpcHandlerContext);
 
         switch (rpcStatus) {
             case NV_WARN_MORE_PROCESSING_REQUIRED:
                 // The synchronous RPC response we were waiting for is here
                 _kgspCompleteRpcHistoryEntry(pRpc->rpcHistory, pRpc->rpcHistoryCurrent);
+                if (!bSlowGspRpc)
+                {
+                    _kgspCheckSlowRpc(pGpu, pRpc);
+                }
                 rpcStatus = NV_OK;
+                // The watchdog report that's related to this RPC is no longer needed
+                if (pKernelGsp->pWatchdogReport != NULL)
+                {
+                    objDelete(pKernelGsp->pWatchdogReport);
+                    pKernelGsp->pWatchdogReport = NULL;
+                }
                 goto done;
             case NV_OK:
                 // Check timeout and continue outer loop.
@@ -2290,21 +2398,27 @@ _kgspRpcRecvPoll
         {
             if (!pRpc->bQuietPrints)
             {
-                _kgspLogRpcSanityCheckFailure(pGpu, pRpc, rpcStatus, expectedFunc);
+                _kgspLogRpcSanityCheckFailure(pGpu, pRpc, rpcStatus, expectedFunc, expectedSequence);
                 pRpc->bQuietPrints = NV_TRUE;
             }
             goto done;
         }
 
+        // 
+        // Today, we will soldier on if GSP times out. This can cause future issues if the action
+        // requested never actually occurs.
+        // 
         if (timeoutStatus == NV_ERR_TIMEOUT)
         {
+            KernelFalcon *pKernelFlcn = staticCast(pKernelGsp, KernelFalcon);
+
             rpcStatus = timeoutStatus;
 
             _kgspRpcIncrementTimeoutCountAndRateLimitPrints(pGpu, pRpc);
 
             if (!pRpc->bQuietPrints)
             {
-                _kgspLogXid119(pGpu, pRpc, expectedFunc);
+                _kgspLogXid119(pGpu, pRpc, expectedFunc, expectedSequence);
             }
 
             // Detect for 3 back to back GSP RPC timeout
@@ -2313,6 +2427,10 @@ _kgspRpcRecvPoll
                 // GSP is completely stalled and cannot be recovered. Mark the GPU for reset.
                 NV_ASSERT_FAILED("Back to back GSP RPC timeout detected! GPU marked for reset");
                 gpuMarkDeviceForReset(pGpu);
+                pKernelGsp->bFatalError = NV_TRUE;
+
+                // Do a destructive ICD dump - core is unrecoverable.
+                kflcnCoreDumpDestructive(pGpu, pKernelFlcn);
 
                 // For Windows, if TDR is supported, trigger TDR to recover the system.
                 if (pGpu->getProperty(pGpu, PDB_PROP_GPU_SUPPORTS_TDR_EVENT))
@@ -2330,6 +2448,20 @@ _kgspRpcRecvPoll
                       timeoutStatus);
             rpcStatus = timeoutStatus;
             goto done;
+        }
+
+        //
+        // Check if Gsync requires display interrupt to be serviced inline to
+        // reduce stutter.
+        // If we have a separate interrupt line, the low latency interrupts will
+        // always all get serviced in the top half, and there's no need to
+        // check them here.
+        //
+        if ((pKernelDisplay != NULL) &&
+            pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_ENABLE_INLINE_INTR_SERVICE) &&
+            !pKernelDisplay->getProperty(pKernelDisplay, PDB_PROP_KDISP_HAS_SEPARATE_LOW_LATENCY_LINE))
+        {
+            kdispApplyAggressiveVblankHandlingWar(pGpu, pKernelDisplay);
         }
 
         osSpinLoop();
@@ -2556,57 +2688,60 @@ _setupLogBufferVgpu
 (
     OBJGPU *pGpu,
     KernelGsp *pKernelGsp,
-    NvU32 gfid,
-    const char *szMemoryId,
-    const char *szPrefix,
-    const char *elfSectionName,
-    NvU64 bufOffset,
-    NvU64 bufSize,
-    RM_LIBOS_LOG_MEM *taskLogArr
+    LOG_VGPU_SETUP_PARAMS logVgpuSetupParams
 )
 {
     NV_STATUS nvStatus = NV_OK;
     RM_LIBOS_LOG_MEM *pTaskLog = NULL;
     char vm_string[8];
 
-    pTaskLog = &taskLogArr[gfid - 1];
+    pTaskLog = &logVgpuSetupParams.taskLogArr[logVgpuSetupParams.gfid - 1];
     NvP64 pVa = NvP64_NULL;
 
     NV_ASSERT_OK_OR_GOTO(nvStatus,
         memdescCreate(&pTaskLog->pTaskLogDescriptor,
                         pGpu,
-                        bufSize,
+                        logVgpuSetupParams.bufSize,
                         RM_PAGE_SIZE,
                         NV_TRUE, ADDR_FBMEM, NV_MEMORY_CACHED,
                         MEMDESC_FLAGS_NONE),
         exit);
 
-    memdescDescribe(pTaskLog->pTaskLogDescriptor, ADDR_FBMEM, bufOffset,  bufSize);
+    memdescDescribe(pTaskLog->pTaskLogDescriptor, ADDR_FBMEM, logVgpuSetupParams.bufOffset, logVgpuSetupParams.bufSize);
 
     pVa = memdescMapInternal(pGpu, pTaskLog->pTaskLogDescriptor, TRANSFER_FLAGS_NONE);
     if (pVa != NvP64_NULL)
     {
         pTaskLog->pTaskLogBuffer = pVa;
-        portMemSet(pTaskLog->pTaskLogBuffer, 0, bufSize);
+        portMemSet(pTaskLog->pTaskLogBuffer, 0, logVgpuSetupParams.bufSize);
 
-        pTaskLog->id8 = _kgspGenerateInitArgId(szMemoryId);
+        pTaskLog->id8 = _kgspGenerateInitArgId(logVgpuSetupParams.szMemoryId);
 
-        nvDbgSnprintf(vm_string, sizeof(vm_string), "%s%d", szPrefix, gfid);
+        nvDbgSnprintf(vm_string, sizeof(vm_string), "%s%d", logVgpuSetupParams.szPrefix, logVgpuSetupParams.gfid);
 
-        libosLogAddLogEx(&pKernelGsp->logDecodeVgpuPartition[gfid - 1],
+        NvU32 libosLogFlags = 0;
+
+        libosLogFlags |= LIBOS_LOG_NVLOG_BUFFER_FLAG_PACKED_METADATA;
+
+        if (logVgpuSetupParams.bMergeNvlog)
+            libosLogFlags |= LIBOS_LOG_NVLOG_BUFFER_FLAG_MERGED_NVLOG_BUFFER;
+
+        libosLogAddLogEx(&pKernelGsp->logDecodeVgpuPartition[logVgpuSetupParams.gfid - 1],
             pTaskLog->pTaskLogBuffer,
             memdescGetSize(pTaskLog->pTaskLogDescriptor),
             pGpu->gpuInstance,
             (gpuGetChipArch(pGpu) >> GPU_ARCH_SHIFT),
             gpuGetChipImpl(pGpu),
             vm_string,
-            elfSectionName,
+            logVgpuSetupParams.elfSectionName,
             0,
-            pKernelGsp->pBuildIdSection);
+            pKernelGsp->pBuildIdSection,
+            LIBOS_LOG_NVLOG_BUFFER_VERSION,
+            libosLogFlags);
     }
     else
     {
-        NV_PRINTF(LEVEL_ERROR, "Failed to map memory for %s task log buffer for vGPU partition \n", szPrefix);
+        NV_PRINTF(LEVEL_ERROR, "Failed to map memory for %s task log buffer for vGPU partition \n", logVgpuSetupParams.szPrefix);
         nvStatus = NV_ERR_INSUFFICIENT_RESOURCES;
         goto exit;
     }
@@ -2649,6 +2784,8 @@ kgspInitVgpuPartitionLogging_IMPL
     NV_STATUS nvStatus = NV_OK;
     char sourceName[SOURCE_NAME_MAX_LENGTH];
     NvBool bPreserveLogBufferFull = NV_FALSE;
+    NvBool bMergeNvlog = NV_TRUE;
+    OBJTMR *pTmr = GPU_GET_TIMER(pGpu);
 
     if (gfid > MAX_PARTITIONS_WITH_GFID)
     {
@@ -2679,16 +2816,14 @@ kgspInitVgpuPartitionLogging_IMPL
             goto exit;
         }
 
+        LOG_VGPU_SETUP_PARAMS logVgpuSetupParams = {gfid, pInfo->memory_id, pInfo->prefix, pInfo->elf_section_name,
+                                                    logInitValues[i].bufOffset, logInitValues[i].bufSize,
+                                                    logInitValues[i].taskLogArr, bMergeNvlog};
+
         nvStatus = _setupLogBufferVgpu(
             pGpu,
             pKernelGsp,
-            gfid,
-            pInfo->memory_id,
-            pInfo->prefix,
-            pInfo->elf_section_name,
-            logInitValues[i].bufOffset,
-            logInitValues[i].bufSize,
-            logInitValues[i].taskLogArr
+            logVgpuSetupParams
         );
 
         if (nvStatus != NV_OK)
@@ -2710,17 +2845,30 @@ kgspInitVgpuPartitionLogging_IMPL
         goto exit;
     }
 
+    LOG_VGPU_SETUP_PARAMS logVgpuSetupParams = {gfid, NV_FIRMWARE_KERNEL_LOG_MEMORY_ID, NV_FIRMWARE_KERNEL_LOG_PREFIX,
+                                                pInfo->elf_section_name, kernelLogBuffOffset, kernelLogBuffSize,
+                                                pKernelGsp->libosKernelLogMem, bMergeNvlog};
+
     nvStatus = _setupLogBufferVgpu(
                 pGpu,
                 pKernelGsp,
-                gfid,
-                NV_FIRMWARE_KERNEL_LOG_MEMORY_ID,
-                NV_FIRMWARE_KERNEL_LOG_PREFIX,
-                pInfo->elf_section_name,
-                kernelLogBuffOffset,
-                kernelLogBuffSize,
-                pKernelGsp->libosKernelLogMem
+                logVgpuSetupParams
+            );
+
+    if (bMergeNvlog)
+    {
+        char vmMergedLogString[8];
+        nvDbgSnprintf(vmMergedLogString, sizeof(vmMergedLogString), "%s%d", "VGPU", gfid);
+        libosLogSetupMergedNvlog(
+            &pKernelGsp->logDecodeVgpuPartition[gfid - 1],
+            pGpu->gpuInstance,
+            initTaskLogBUffSize + vgpuTaskLogBuffSize + kernelLogBuffSize,
+            vmMergedLogString,
+            (gpuGetChipArch(pGpu) >> GPU_ARCH_SHIFT),
+            gpuGetChipImpl(pGpu),
+            pKernelGsp->pBuildIdSection
         );
+    }
 
     if (nvStatus != NV_OK)
         goto exit;
@@ -2739,6 +2887,8 @@ kgspInitVgpuPartitionLogging_IMPL
     pKernelGsp->bHasVgpuLogs = NV_TRUE;
 
     *pPreserveLogBufferFull = bPreserveLogBufferFull;
+
+    libosLogUpdateTimerDelta(&pKernelGsp->logDecodeVgpuPartition[gfid - 1], pTmr->sysTimerOffsetNs);
 
 exit:
     if (nvStatus != NV_OK)
@@ -2809,7 +2959,7 @@ _kgspFreeLibosLoggingStructures
         if (pLog->pTaskLogBuffer != NULL)
         {
             memdescUnmap(pLog->pTaskLogDescriptor,
-                         NV_TRUE, osGetCurrentProcess(),
+                         NV_TRUE,
                          (void *)pLog->pTaskLogBuffer,
                          pLog->pTaskLogMappingPriv);
             pLog->pTaskLogBuffer = NULL;
@@ -2877,17 +3027,13 @@ _setupLogBufferBaremetal
     pLog->pTaskLogMappingPriv = pPriv;
     portMemSet(pLog->pTaskLogBuffer, 0, memdescGetSize(pLog->pTaskLogDescriptor));
 
-    // Pass the PTE table for the log buffer in the log buffer, after the put pointer.
-    memdescGetPhysAddrs(pLog->pTaskLogDescriptor,
-                        AT_GPU,
-                        0,
-                        RM_PAGE_SIZE,
-                        NV_CEIL(memdescGetSize(pLog->pTaskLogDescriptor), RM_PAGE_SIZE),
-                        &pLog->pTaskLogBuffer[1]);
+    // Pass the GPA for the log buffer in the log buffer, after the put pointer.
+    pLog->pTaskLogBuffer[1] = memdescGetPhysAddr(pLog->pTaskLogDescriptor, AT_GPU, 0);
 
     pLog->id8 = _kgspGenerateInitArgId(szMemoryId);
 
-    NvU32 libosLogFlags = (bEnableNvlog ? 0 : LIBOS_LOG_DECODE_LOG_FLAG_NVLOG_DISABLED);
+    NvU32 libosLogDecodeFlags = (bEnableNvlog ? 0 : LIBOS_LOG_DECODE_LOG_FLAG_NVLOG_DISABLED);
+    NvU32 libosLogFlags = LIBOS_LOG_NVLOG_BUFFER_FLAG_PACKED_METADATA;
 
     ct_assert(NV_FIRMWARE_GPU_ARCH_SHIFT == GPU_ARCH_SHIFT);
 
@@ -2899,8 +3045,10 @@ _setupLogBufferBaremetal
         gpuGetChipImpl(pGpu),
         szPrefix,
         elfSectionName,
-        libosLogFlags,
-        pKernelGsp->pBuildIdSection);
+        libosLogDecodeFlags,
+        pKernelGsp->pBuildIdSection,
+        LIBOS_LOG_NVLOG_BUFFER_VERSION,
+        libosLogFlags);
 
 exit:
     return nvStatus;
@@ -3179,6 +3327,10 @@ _kgspFreeNotifyOpSharedSurface(OBJGPU *pGpu, KernelGsp *pKernelGsp)
 {
     if (pKernelGsp->pNotifyOpSurfMemDesc != NULL)
     {
+        memdescUnmap(pKernelGsp->pNotifyOpSurfMemDesc,
+                     NV_TRUE,
+                     pKernelGsp->pNotifyOpSurf,
+                     pKernelGsp->pNotifyOpSurfPriv);
         memdescFree(pKernelGsp->pNotifyOpSurfMemDesc);
         memdescDestroy(pKernelGsp->pNotifyOpSurfMemDesc);
     }
@@ -3190,52 +3342,52 @@ _kgspFreeNotifyOpSharedSurface(OBJGPU *pGpu, KernelGsp *pKernelGsp)
 
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
 /*!
- * Free LIBOS task coverage structures
+ * Free LIBOS task instrumentation structures
  */
 static void
-_kgspFreeTaskRMCoverageStructure
+_kgspFreeTaskRmInstrumentationStructure
 (
     OBJGPU *pGpu,
     KernelGsp *pKernelGsp
 )
 {
 
-    RM_LIBOS_COVERAGE_MEM *pCoverage = &pKernelGsp->taskRmCoverage;
+    RM_LIBOS_INSTRUMENTATION_MEM *pInstrumentation = &pKernelGsp->taskRmInstrumentation;
 
-    // release coverage memory
-    if (pCoverage->pTaskCoverageBuffer != NULL)
+    // release instrumentation memory
+    if (pInstrumentation->pTaskInstrumentationBuffer != NULL)
     {
-        memdescUnmap(pCoverage->pTaskCoverageDescriptor,
-                        NV_TRUE, osGetCurrentProcess(),
-                        (void *)pCoverage->pTaskCoverageBuffer,
-                        pCoverage->pTaskCoverageMappingPriv);
-        pCoverage->pTaskCoverageBuffer = NULL;
-        pCoverage->pTaskCoverageMappingPriv = NULL;
+        memdescUnmap(pInstrumentation->pTaskInstrumentationDescriptor,
+                        NV_TRUE,
+                        (void *)pInstrumentation->pTaskInstrumentationBuffer,
+                        pInstrumentation->pTaskInstrumentationMappingPriv);
+        pInstrumentation->pTaskInstrumentationBuffer = NULL;
+        pInstrumentation->pTaskInstrumentationMappingPriv = NULL;
     }
 
-    if (pCoverage->pTaskCoverageDescriptor != NULL)
+    if (pInstrumentation->pTaskInstrumentationDescriptor != NULL)
     {
-        memdescFree(pCoverage->pTaskCoverageDescriptor);
-        memdescDestroy(pCoverage->pTaskCoverageDescriptor);
-        pCoverage->pTaskCoverageDescriptor = NULL;
+        memdescFree(pInstrumentation->pTaskInstrumentationDescriptor);
+        memdescDestroy(pInstrumentation->pTaskInstrumentationDescriptor);
+        pInstrumentation->pTaskInstrumentationDescriptor = NULL;
     }
 
 }
 
 /*
- * Init task_rm coverage
+ * Init task_rm instrumentation
  */
 static NV_STATUS
-_kgspSetupTaskRMCoverageStructure (
+_kgspSetupTaskRmInstrumentationStructure (
     OBJGPU *pGpu,
     KernelGsp *pKernelGsp,
     ENGDESCRIPTOR engDesc
 )
 {
     NV_STATUS nvStatus = NV_OK;
-    RM_LIBOS_COVERAGE_MEM *pRmCov = &pKernelGsp->taskRmCoverage;
+    RM_LIBOS_INSTRUMENTATION_MEM *pRmInstrumentation = &pKernelGsp->taskRmInstrumentation;
     NV_ASSERT_OK_OR_GOTO(nvStatus,
-        memdescCreate(&pRmCov->pTaskCoverageDescriptor,
+        memdescCreate(&pRmInstrumentation->pTaskInstrumentationDescriptor,
                         pGpu,
                         BULLSEYE_GSP_RM_COVERAGE_SIZE,
                         RM_PAGE_SIZE,
@@ -3243,23 +3395,24 @@ _kgspSetupTaskRMCoverageStructure (
                         MEMDESC_FLAGS_NONE), done);
 
     memdescTagAlloc(nvStatus,
-                    NV_FB_ALLOC_RM_INTERNAL_OWNER_COV_TASK_DESCRIPTOR, pRmCov->pTaskCoverageDescriptor);
+                    NV_FB_ALLOC_RM_INTERNAL_OWNER_COV_TASK_DESCRIPTOR,
+                    pRmInstrumentation->pTaskInstrumentationDescriptor);
     NV_ASSERT_OK_OR_GOTO(nvStatus, nvStatus, done);
-    NvP64 covPva = NvP64_NULL;
-    NvP64 covPpriv = NvP64_NULL;
+    NvP64 instrumentationPva = NvP64_NULL;
+    NvP64 instrumentationPpriv = NvP64_NULL;
     NV_ASSERT_OK_OR_GOTO(nvStatus,
-        memdescMap(pRmCov->pTaskCoverageDescriptor, 0,
-                    memdescGetSize(pRmCov->pTaskCoverageDescriptor),
+        memdescMap(pRmInstrumentation->pTaskInstrumentationDescriptor, 0,
+                    memdescGetSize(pRmInstrumentation->pTaskInstrumentationDescriptor),
                     NV_TRUE, NV_PROTECT_READ_WRITE,
-                    &covPva, &covPpriv),
+                    &instrumentationPva, &instrumentationPpriv),
         done);
-    pRmCov->pTaskCoverageBuffer = covPva;
-    pRmCov->pTaskCoverageMappingPriv = covPpriv;
-    pRmCov->id8 = _kgspGenerateInitArgId("RMCOV");
+    pRmInstrumentation->pTaskInstrumentationBuffer = instrumentationPva;
+    pRmInstrumentation->pTaskInstrumentationMappingPriv = instrumentationPpriv;
+    pRmInstrumentation->id8 = _kgspGenerateInitArgId("RMCOV");
 done:
     if (nvStatus != NV_OK)
     {
-        _kgspFreeTaskRMCoverageStructure(pGpu, pKernelGsp);
+        _kgspFreeTaskRmInstrumentationStructure(pGpu, pKernelGsp);
     }
     return nvStatus;
 }
@@ -3305,10 +3458,10 @@ kgspConstructEngine_IMPL
     }
 
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-    nvStatus = _kgspSetupTaskRMCoverageStructure(pGpu, pKernelGsp, engDesc);
+    nvStatus = _kgspSetupTaskRmInstrumentationStructure(pGpu, pKernelGsp, engDesc);
     if (nvStatus != NV_OK)
     {
-        NV_PRINTF(LEVEL_ERROR, "init task_rm coverage structure failed");
+        NV_PRINTF(LEVEL_ERROR, "init task_rm instrumentation structure failed");
         goto done;
     }
 #endif
@@ -3347,7 +3500,7 @@ done:
         _kgspFreeSimAccessBuffer(pGpu, pKernelGsp);
         kgspFreeBootArgs_HAL(pGpu, pKernelGsp);
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-        _kgspFreeTaskRMCoverageStructure(pGpu, pKernelGsp);
+        _kgspFreeTaskRmInstrumentationStructure(pGpu, pKernelGsp);
 #endif
         _kgspFreeLibosLoggingStructures(pGpu, pKernelGsp);
         _kgspFreeRpcInfrastructure(pGpu, pKernelGsp);
@@ -3546,7 +3699,8 @@ _kgspBootGspRm(OBJGPU *pGpu, KernelGsp *pKernelGsp, GSP_FIRMWARE *pGspFw, GPU_MA
     *pbRetry = NV_FALSE;
 
     // Fail early if WPR2 is up
-    if (kgspIsWpr2Up_HAL(pGpu, pKernelGsp))
+    if (kgspIsWpr2Up_HAL(pGpu, pKernelGsp) &&
+        (!pGpu->getProperty(pGpu, PDB_PROP_GPU_PREINITIALIZED_WPR_REGION)))
     {
         NV_PRINTF(LEVEL_ERROR, "unexpected WPR2 already up, cannot proceed with booting GSP\n");
         NV_PRINTF(LEVEL_ERROR, "(the GPU is likely in a bad state and may need to be reset)\n");
@@ -3556,8 +3710,10 @@ _kgspBootGspRm(OBJGPU *pGpu, KernelGsp *pKernelGsp, GSP_FIRMWARE *pGspFw, GPU_MA
     // Populate WPR meta structure (requires knowing FB size on dGPU, which depends on GFW_BOOT)
     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPopulateWprMeta_HAL(pGpu, pKernelGsp, pGspFw));
 
-    // If the new FB layout requires a scrubber ucode to scrub additional space, prepare it now
-    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, _kgspPrepareScrubberImageIfNeeded(pGpu, pKernelGsp));
+    {
+        // If the new FB layout requires a scrubber ucode to scrub additional space, prepare it now
+        NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, _kgspPrepareScrubberImageIfNeeded(pGpu, pKernelGsp));
+    }
 
     // Setup arguments for bootstrapping GSP
     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPrepareForBootstrap_HAL(pGpu, pKernelGsp, KGSP_BOOT_MODE_NORMAL));
@@ -3580,11 +3736,11 @@ _kgspBootGspRm(OBJGPU *pGpu, KernelGsp *pKernelGsp, GSP_FIRMWARE *pGspFw, GPU_MA
     // Proceed with GSP boot
     status = kgspBootstrap_HAL(pGpu, pKernelGsp, KGSP_BOOT_MODE_NORMAL);
 
-    if (status != NV_OK)
+    if (status != NV_OK && !pGpu->pGpuArch->bGpuArchIsZeroFb)
     {
         // Increment the bootAttempt counter only on failure to boot GSP
         pKernelGsp->bootAttempts++;
-        if (gpuCheckEccCounts_HAL(pGpu) || (bEccDisabled && !hypervisorIsVgxHyper()))
+        if (gpuCheckEccCounts_HAL(pGpu) || bEccDisabled)
         {
             *pbRetry = NV_TRUE;
 
@@ -3978,7 +4134,7 @@ kgspUnloadRm_IMPL
     kgspDumpGspLogs(pKernelGsp, NV_FALSE);
 
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-    kgspCollectGspCoverage(pGpu, pKernelGsp);
+    kgspCollectGspInstrumentation(pGpu, pKernelGsp);
 #endif
 
     // Teardown remaining GSP state
@@ -3995,6 +4151,12 @@ kgspUnloadRm_IMPL
         IS_VGPU_GSP_PLUGIN_OFFLOAD_ENABLED(pGpu))
     {
         osDelay(250);
+    }
+
+    if (pKernelGsp->pWatchdogReport != NULL)
+    {
+        objDelete(pKernelGsp->pWatchdogReport);
+        pKernelGsp->pWatchdogReport = NULL;
     }
 
     if (rpcStatus != NV_OK)
@@ -4038,7 +4200,7 @@ kgspDestruct_IMPL
 
     _kgspFreeLibosLoggingStructures(pGpu, pKernelGsp);
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
-    _kgspFreeTaskRMCoverageStructure(pGpu, pKernelGsp);
+    _kgspFreeTaskRmInstrumentationStructure(pGpu, pKernelGsp);
 #endif
     _kgspFreeRpcInfrastructure(pGpu, pKernelGsp);
     _kgspFreeBootBinaryImage(pGpu, pKernelGsp);
@@ -4082,9 +4244,9 @@ kgspDumpGspLogs_IMPL
     NvBool bSyncNvLog
 )
 {
-    if (pKernelGsp->bInInit || pKernelGsp->pLogElf || bSyncNvLog
-      || pKernelGsp->bHasVgpuLogs
-    )
+    if (RMCFG_FEATURE_RM_NEW_TRACER_ETW ||
+        pKernelGsp->bInInit || pKernelGsp->pLogElf || bSyncNvLog ||
+        pKernelGsp->bHasVgpuLogs)
     {
         while (!portAtomicCompareAndSwapS32(&pKernelGsp->logDumpLock, 1, 0))
         {
@@ -4111,15 +4273,15 @@ kgspDumpGspLogs_IMPL
  *
  */
 void
-kgspCollectGspCoverage_IMPL
+kgspCollectGspInstrumentation_IMPL
 (
     OBJGPU *pGpu,
     KernelGsp *pKernelGsp
 )
 {
     OBJSYS *pSys = SYS_GET_INSTANCE();
-    NvU8 *pSysmemBuffer = (NvU8*) pKernelGsp->taskRmCoverage.pTaskCoverageBuffer;
-    codecovmgrMergeCoverage(pSys->pCodeCovMgr, 0, pGpu->gpuInstance, pSysmemBuffer);
+    NvU8 *pSysmemBuffer = (NvU8*) pKernelGsp->taskRmInstrumentation.pTaskInstrumentationBuffer;
+    instrumentationmanagerMerge(pSys->pInstrumentationManager, 0, pGpu->gpuInstance, pSysmemBuffer);
 }
 #endif
 
@@ -4180,7 +4342,7 @@ kgspPopulateGspRmInitArgs_IMPL
         pGspArgs->profilerArgs.size = memdescGetSize(pKernelGsp->pProfilerSamplesMD);
     }
 
-    if (pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB))
+    if (pGpu->pGpuArch->bGpuArchIsZeroFb)
     {
         pGspArgs->sysmemHeapArgs.pa = memdescGetPhysAddr(pKernelGsp->pSysmemHeapDescriptor, AT_GPU, 0);
         pGspArgs->sysmemHeapArgs.size = pKernelGsp->pSysmemHeapDescriptor->Size;
@@ -4283,7 +4445,7 @@ _kgspFreeBootBinaryImage
     if (pKernelGsp->pGspRmBootUcodeImage != NULL)
     {
         memdescUnmap(pKernelGsp->pGspRmBootUcodeMemdesc,
-                     NV_TRUE, osGetCurrentProcess(),
+                     NV_TRUE,
                      (void *)pKernelGsp->pGspRmBootUcodeImage,
                      pKernelGsp->pGspRmBootUcodeMemdescPriv);
         pKernelGsp->pGspRmBootUcodeImage = NULL;
@@ -4439,7 +4601,7 @@ _kgspGetSectionNameForPrefix
                         NV_ERR_INVALID_STATE);
 
     pChipFamilyName = nv_firmware_chip_family_to_string(chipFamily);
-    NV_ASSERT_OR_RETURN(pChipFamilyName != NULL, NV_ERR_INVALID_STATE);
+    NV_ASSERT_OR_RETURN(portStringLength(pChipFamilyName) != 0, NV_ERR_INVALID_STATE);
 
     sectionPrefixLength = portStringLength(pSectionPrefix);
     chipFamilyNameLength = portStringLength(pChipFamilyName);
@@ -4612,6 +4774,14 @@ kgspCreateRadix3_IMPL
     memdescSetPageSize(*ppMemdescRadix3, AT_GPU, RM_PAGE_SIZE_HUGE);
     memdescTagAlloc(status,
             NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_17, (*ppMemdescRadix3));
+    if (status == NV_ERR_NO_MEMORY)
+    {
+        // TODO: Bug 5299603
+        NV_PRINTF(LEVEL_INFO, "memdescTagAllocate failed for huge pages, trying again with regular ones\n");
+        memdescSetPageSize(*ppMemdescRadix3, AT_GPU, RM_PAGE_SIZE);
+        memdescTagAlloc(status,
+                NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_17, (*ppMemdescRadix3));
+    }
     NV_ASSERT_OK_OR_GOTO(status, status, error_ret);
 
     // Create kernel mapping.
@@ -4669,7 +4839,7 @@ kgspCreateRadix3_IMPL
     // No reason to keep this memory mapped on the CPU side.  Only GSP will
     // access it after this point.
     //
-    memdescUnmap(*ppMemdescRadix3, NV_TRUE, osGetCurrentProcess(),
+    memdescUnmap(*ppMemdescRadix3, NV_TRUE,
                   pVaKernel, pPrivKernel);
 done:
     return status;
@@ -4795,7 +4965,7 @@ kgspSetupLibosInitArgs_IMPL
 {
     LibosMemoryRegionInitArgument *pLibosInitArgs = pKernelGsp->pLibosInitArgumentsCached;
     NvU8 idx;
-    portMemSet(pLibosInitArgs, 0, LIBOS_INIT_ARGUMENTS_SIZE);
+    portMemSet(pLibosInitArgs, 0, LIBOS_MEMORY_REGION_INIT_ARGUMENTS_MAX);
 
 
     // Add memory areas for logging each LIBOS task.
@@ -4821,9 +4991,9 @@ kgspSetupLibosInitArgs_IMPL
 #if RMCFG_FEATURE_GSPRM_BULLSEYE || defined(GSPRM_BULLSEYE_ENABLE)
     pLibosInitArgs[idx].kind = LIBOS_MEMORY_REGION_CONTIGUOUS;
     pLibosInitArgs[idx].loc  = LIBOS_MEMORY_REGION_LOC_SYSMEM;
-    pLibosInitArgs[idx].id8  = pKernelGsp->taskRmCoverage.id8;
-    pLibosInitArgs[idx].pa   = memdescGetPhysAddr(pKernelGsp->taskRmCoverage.pTaskCoverageDescriptor, AT_GPU, 0);
-    pLibosInitArgs[idx].size = memdescGetSize(pKernelGsp->taskRmCoverage.pTaskCoverageDescriptor);
+    pLibosInitArgs[idx].id8  = pKernelGsp->taskRmInstrumentation.id8;
+    pLibosInitArgs[idx].pa   = memdescGetPhysAddr(pKernelGsp->taskRmInstrumentation.pTaskInstrumentationDescriptor, AT_GPU, 0);
+    pLibosInitArgs[idx].size = memdescGetSize(pKernelGsp->taskRmInstrumentation.pTaskInstrumentationDescriptor);
     ++idx;
 #endif
 
@@ -4853,7 +5023,7 @@ kgspRpcRecvEvents_IMPL
     // If we do the assert will fail on NV_WARN_MORE_PROCESSING_REQUIRED,
     // in addition to general error codes.
     //
-    NV_ASSERT_OK(_kgspRpcDrainEvents(pGpu, pKernelGsp, NV_VGPU_MSG_FUNCTION_NUM_FUNCTIONS, KGSP_RPC_EVENT_HANDLER_CONTEXT_INTERRUPT));
+    NV_ASSERT_OK(_kgspRpcDrainEvents(pGpu, pKernelGsp, NV_VGPU_MSG_FUNCTION_NUM_FUNCTIONS, 0, KGSP_RPC_EVENT_HANDLER_CONTEXT_INTERRUPT));
 }
 
 /*!
@@ -4868,6 +5038,9 @@ kgspWaitForRmInitDone_IMPL
 {
     OBJRPC *pRpc = pKernelGsp->pRpc;
 
+    pGpu->bIsRTD3Gc6D3HotTransition   = NV_FALSE;
+    pGpu->bIsRTD3GcoffD3HotTransition = NV_FALSE;
+
     //
     // Kernel RM can timeout when GSP-RM has an error condition.  Give GSP-RM
     // a chance to report the error before we pull the rug out from under it.
@@ -4875,7 +5048,7 @@ kgspWaitForRmInitDone_IMPL
     threadStateResetTimeout(pGpu);
 
     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
-        rpcRecvPoll(pGpu, pRpc, NV_VGPU_MSG_EVENT_GSP_INIT_DONE));
+        rpcRecvPoll(pGpu, pRpc, NV_VGPU_MSG_EVENT_GSP_INIT_DONE, 0));
 
     //
     // Now check if RPC really succeeded (NV_VGPU_MSG_RESULT_* are defined to
@@ -4884,10 +5057,20 @@ kgspWaitForRmInitDone_IMPL
     NV_ASSERT_OK_OR_RETURN(RPC_HDR->rpc_result);
 
     pGpu->gspRmInitialized = NV_TRUE;
-    if (hypervisorIsVgxHyper() && pGpu->getProperty(pGpu, PDB_PROP_GPU_EXTENDED_GSP_RM_INITIALIZATION_TIMEOUT_FOR_VGX))
+
+    // Set D3Hot info let Kernel-RM reports it to KMD
+    RPC_PARAMS(init_done, _v17_00);
+    NV_PRINTF(LEVEL_INFO, "GSP-RM reports bIsD3Hot = 0x%08x\n", rpc_params->bIsD3Hot);
+
+    if (IS_GPU_GC6_STATE_EXITING(pGpu))
     {
-        // Decrease timeout values for VGX driver
-        timeoutInitializeGpuDefault(&pGpu->timeoutData, pGpu);
+        // Kernel-RM reports this info in _gpuGc6ExitStateLoad
+        pGpu->bIsRTD3Gc6D3HotTransition = rpc_params->bIsD3Hot;
+    }
+    else
+    {
+        // Kernel-RM reports this info in RmSetPowerStateEx
+        pGpu->bIsRTD3GcoffD3HotTransition = rpc_params->bIsD3Hot;
     }
 
     return NV_OK;
@@ -5163,7 +5346,7 @@ _kgspCalculateFwHeapSize
 
     // For VGPU, use the static pre-calculated size
     if (pGpu->bVgpuGspPluginOffloadEnabled)
-        return GSP_FW_HEAP_SIZE_VGPU_DEFAULT;
+        return kgspVgpuFwHeapSize_HAL(pGpu, pKernelGsp);
 
     //
     // The baremetal heap calculation is a function of the architecture, FB
@@ -5172,7 +5355,7 @@ _kgspCalculateFwHeapSize
     //
     pKernelMemorySystem = GPU_GET_KERNEL_MEMORY_SYSTEM(pGpu);
 
-    if (pGpu->getProperty(pGpu, PDB_PROP_GPU_ZERO_FB))
+    if (pGpu->pGpuArch->bGpuArchIsZeroFb)
     {
         // Bug 4898452 - Hardcode this size for now, will come out to 134MB on GB10b
         memSizeGB = 1;
@@ -5386,6 +5569,7 @@ static NV_STATUS _kgspDumpEngineFunc
             prbEncNestedStart(pPrbEnc, NVDEBUG_ENG_KGSP_RPC_HISTORY));
 
         prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_FUNCTION, entry->function);
+        prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_SEQUENCE, entry->sequence);
         prbEncAddUInt64(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_TS_START, entry->ts_start);
         prbEncAddUInt64(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_TS_END, entry->ts_end);
         prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_DATA0, entry->data[0]);
@@ -5406,6 +5590,7 @@ static NV_STATUS _kgspDumpEngineFunc
             prbEncNestedStart(pPrbEnc, NVDEBUG_ENG_KGSP_EVENT_HISTORY));
 
         prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_FUNCTION, entry->function);
+        prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_SEQUENCE, entry->sequence);
         prbEncAddUInt64(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_TS_START, entry->ts_start);
         prbEncAddUInt64(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_TS_END, entry->ts_end);
         prbEncAddUInt32(pPrbEnc, NVDEBUG_ENG_KGSP_RPCINFO_DATA0, entry->data[0]);
@@ -5423,8 +5608,6 @@ static NV_STATUS _kgspDumpEngineFunc
 
 /*!
 * @brief initialize the nocat diagnostic buffer to accumulate data in.
-*
-* @param pKernelGsp                 Pointer to KernelGsp object
 *
 * @returns                   status of the buffer.
 */
@@ -5445,6 +5628,9 @@ kgspInitNocatData_IMPL
         case GSP_NOCAT_GSP_RPC_HISTORY:
         case GSP_NOCAT_GSP_RPC_TIMEOUT:
             fieldDesc = DCL_DCLMSG_GSP_XIDREPORT;
+            break;
+        case GSP_NOCAT_GSP_RPC_PERF:
+            fieldDesc = DCL_DCLMSG_GSP_RPCPERF;
             break;
         default:
             return NV_ERR_INVALID_ARGUMENT;
@@ -5532,6 +5718,13 @@ kgspPostNocatData_IMPL
             newEntry.pSource = GSP_NOCAT_SOURCE_ID_RPC_TIMEOUT;
             break;
         }
+        case GSP_NOCAT_GSP_RPC_PERF:
+        {
+            // post the buffer as non-terminating event
+            newEntry.recType = NV2080_NOCAT_JOURNAL_REC_TYPE_ENGINE;
+            newEntry.pSource = GSP_NOCAT_SOURCE_ID_RPC_PERF;
+            break;
+        }
         default:
             newEntry.recType = NV2080_NOCAT_JOURNAL_REC_TYPE_ENGINE;
             newEntry.pSource = GSP_NOCAT_SOURCE_ID;
@@ -5547,4 +5740,83 @@ end:
     pKernelGsp->nocatData.initialized = NV_FALSE;
 
     return status;
+}
+
+/*!
+* @brief Helper function for logging crashcat report to NOCAT
+*
+* @param pKernelGsp                 Pointer to KernelGsp object
+*/
+NV_STATUS
+kgspPostCrashcatReportToNocat_IMPL
+(
+    OBJGPU *pGpu,
+    KernelGsp *pKernelGsp,
+    CrashCatReport *pReport,
+    NvU32 xid
+)
+{
+    NV_STATUS status = NV_OK;
+    char buildIdString[64];
+    LibosElfNoteHeader *pBuildIdNoteHeader = pKernelGsp->pBuildIdSection;
+
+    kgspInitNocatData(pGpu, pKernelGsp, GSP_NOCAT_CRASHCAT_REPORT);
+
+    // Build id string can be used by offline decoder to decode crashcat data/addresses to symbols
+    if (pKernelGsp->pBuildIdSection != NULL)
+    {
+        portStringBufferToHex(buildIdString,
+                                sizeof(buildIdString)/sizeof(buildIdString[0]),
+                                pBuildIdNoteHeader->data + pBuildIdNoteHeader->namesz,
+                                pBuildIdNoteHeader->descsz);
+
+        prbEncAddString(&pKernelGsp->nocatData.nocatBuffer,
+                        GSP_XIDREPORT_BUILDID,
+                        &buildIdString[0]);
+    }
+
+    // ErrorCode of nocat event is used for categorizing GSP crash data collected from the field via nocat
+    // Since lowest bit of ra is always empty, we use bit 0 to store the sign bit, for
+    // differentiating task crash vs libos crash
+    // signbit of ra - 1 bit, 0
+    // ra           - (28 - 1) bits, 27:1
+    // scause       - 4 bits, 31:28
+    // stval        - 32 bits, 63:32
+    pKernelGsp->nocatData.errorCode |= (crashcatReportRa_HAL(pReport) >> 63) & 1;
+    pKernelGsp->nocatData.errorCode |= crashcatReportRa_HAL(pReport) & 0xFFFFFFE;
+    pKernelGsp->nocatData.errorCode |= (crashcatReportXcause_HAL(pReport) & 0xF) << 28;
+    pKernelGsp->nocatData.errorCode |= (crashcatReportXtval_HAL(pReport) & 0xFFFFFFFF) << 32;
+
+    prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_XIDREPORT_XID, xid);
+    prbEncAddUInt32(&pKernelGsp->nocatData.nocatBuffer, GSP_XIDREPORT_GPUINSTANCE, gpuGetInstance(pGpu));
+    crashcatReportLogToProtobuf_HAL(pReport, &pKernelGsp->nocatData.nocatBuffer);
+
+    status = kgspPostNocatData(pGpu, pKernelGsp, osGetTimestamp());
+    return status;
+}
+
+/*!
+* @brief Helper function for printing GSP bin buildId
+*
+* @param pKernelGsp                 Pointer to KernelGsp object
+*/
+void
+kgspPrintGspBinBuildId_IMPL
+(
+    OBJGPU *pGpu,
+    KernelGsp *pKernelGsp
+)
+{
+    char buildIdString[64];
+    LibosElfNoteHeader *pBuildIdNoteHeader;
+
+    if (pKernelGsp->pBuildIdSection != NULL)
+    {
+        pBuildIdNoteHeader = pKernelGsp->pBuildIdSection;
+        portStringBufferToHex(buildIdString,
+                                NV_ARRAY_ELEMENTS(buildIdString),
+                                pBuildIdNoteHeader->data + pBuildIdNoteHeader->namesz,
+                                pBuildIdNoteHeader->descsz);
+        NV_PRINTF(LEVEL_ERROR, "GSP bin buildId: %s\n", buildIdString);
+    }
 }

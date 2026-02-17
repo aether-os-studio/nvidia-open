@@ -29,7 +29,6 @@
 
 #include "nvidia-3d-fermi.h"
 #include "nvidia-3d-kepler.h"
-#include "nvidia-3d-maxwell.h"
 #include "nvidia-3d-pascal.h"
 #include "nvidia-3d-volta.h"
 #include "nvidia-3d-turing.h"
@@ -45,18 +44,10 @@
 #include <class/clc797.h> // AMPERE_B
 #include <class/clc697.h> // AMPERE_A
 #include <class/clc597.h> // TURING_A
-#include <class/clc397.h> // VOLTA_A
-#include <class/clc197.h> // PASCAL_B
-#include <class/clc097.h> // PASCAL_A
-#include <class/clb197.h> // MAXWELL_B
-#include <class/clb097.h> // MAXWELL_A
 
 #include <ctrl/ctrl2080/ctrl2080gr.h>
 #include <nvos.h>
 
-#include "g_maxwell_shader_info.h"
-#include "g_pascal_shader_info.h"
-#include "g_volta_shader_info.h"
 #include "g_turing_shader_info.h"
 #include "g_ampere_shader_info.h"
 #include "g_hopper_shader_info.h"
@@ -90,9 +81,6 @@ static Nv3dChannelProgramsRec PickProgramsRec(
 {
     const Nv3dChannelProgramsRec programsTable[NV3D_SHADER_ARCH_COUNT] = {
 
-        _NV3D_CHANNEL_PROGRAMS_ENTRY(maxwell, Maxwell, MAXWELL),
-        _NV3D_CHANNEL_PROGRAMS_ENTRY(pascal, Pascal, PASCAL),
-        _NV3D_CHANNEL_PROGRAMS_ENTRY(volta, Volta, VOLTA),
         _NV3D_CHANNEL_PROGRAMS_ENTRY(turing, Turing, TURING),
         _NV3D_CHANNEL_PROGRAMS_ENTRY(ampere, Ampere, AMPERE),
         _NV3D_CHANNEL_PROGRAMS_ENTRY(hopper, Hopper, HOPPER),
@@ -320,33 +308,6 @@ static NvBool GetSpaVersion(
     return FALSE;
 }
 
-static const Nv3dHal _nv3dHalMaxwell = {
-    _nv3dSetSpaVersionKepler,                       /* setSpaVersion */
-    _nv3dInitChannelMaxwell,                        /* initChannel */
-    _nv3dUploadDataInlineKepler,                    /* uploadDataInline */
-    _nv3dSetProgramOffsetFermi,                     /* setProgramOffset */
-    _nv3dAssignNv3dTextureMaxwell,                  /* assignNv3dTexture */
-    _nv3dSetVertexStreamEndFermi,                   /* setVertexStreamEnd */
-};
-
-static const Nv3dHal _nv3dHalPascal = {
-    _nv3dSetSpaVersionKepler,                       /* setSpaVersion */
-    _nv3dInitChannelPascal,                         /* initChannel */
-    _nv3dUploadDataInlineKepler,                    /* uploadDataInline */
-    _nv3dSetProgramOffsetFermi,                     /* setProgramOffset */
-    _nv3dAssignNv3dTexturePascal,                   /* assignNv3dTexture */
-    _nv3dSetVertexStreamEndFermi,                   /* setVertexStreamEnd */
-};
-
-static const Nv3dHal _nv3dHalVolta = {
-    _nv3dSetSpaVersionKepler,                       /* setSpaVersion */
-    _nv3dInitChannelPascal,                         /* initChannel */
-    _nv3dUploadDataInlineKepler,                    /* uploadDataInline */
-    _nv3dSetProgramOffsetVolta,                     /* setProgramOffset */
-    _nv3dAssignNv3dTexturePascal,                   /* assignNv3dTexture */
-    _nv3dSetVertexStreamEndFermi,                   /* setVertexStreamEnd */
-};
-
 static const Nv3dHal _nv3dHalTuring = {
     _nv3dSetSpaVersionKepler,                       /* setSpaVersion */
     _nv3dInitChannelTuring,                         /* initChannel */
@@ -388,42 +349,31 @@ NvBool nv3dAllocDevice(
 #define ENTRY(_classNumber,                                          \
               _arch,                                                 \
               _amodelArch,                                           \
-              _hasSetBindlessTexture,                                \
-              _hasProgramRegion,                                     \
               _maxDim,                                               \
               _hal)                                                  \
         {                                                            \
             .base.classNumber           = _classNumber,              \
             .base.amodelConfig          = NV_AMODEL_ ## _amodelArch, \
-            .caps.hasSetBindlessTexture = _hasSetBindlessTexture,    \
-            .caps.hasProgramRegion      = _hasProgramRegion,         \
             .caps.maxDim                = _maxDim,                   \
             .hal                        = &_nv3dHal ## _hal,         \
             .shaderArch                 = NV3D_SHADER_ARCH_ ## _arch,\
         }
 
         /*
-         * hal--------------------------------------------------+
-         * maxDim----------------------------------------+      |
-         * hasProgramRegion---------------------------+  |      |
-         * hasSetBindlessTexture-------------------+  |  |      |
-         * amodel arch----------------+            |  |  |      |
-         * shader arch---+            |            |  |  |      |
-         * classNumber   |            |            |  |  |      |
-         *    |          |            |            |  |  |      |
+         * hal------------------------------------------+
+         * maxDim--------------------------------+      |
+         * amodel arch----------------+          |      |
+         * shader arch-----+          |          |      |
+         * classNumber     |          |          |      |
+         *    |            |          |          |      |
          */
-        ENTRY(BLACKWELL_B,GB20X,      GB20X,       0, 0, 32768, Hopper),
-        ENTRY(BLACKWELL_A,BLACKWELL,  BLACKWELL,   0, 0, 32768, Hopper),
-        ENTRY(HOPPER_A,  HOPPER,      HOPPER,      0, 0, 32768, Hopper),
-        ENTRY(ADA_A,     AMPERE,      ADA,         0, 0, 32768, Ampere),
-        ENTRY(AMPERE_B,  AMPERE,      AMPERE,      0, 0, 32768, Ampere),
-        ENTRY(AMPERE_A,  AMPERE,      AMPERE,      0, 0, 32768, Ampere),
-        ENTRY(TURING_A,  TURING,      TURING,      0, 0, 32768, Turing),
-        ENTRY(VOLTA_A,   VOLTA,       VOLTA,       0, 0, 32768, Volta),
-        ENTRY(PASCAL_B,  PASCAL,      PASCAL,      1, 1, 32768, Pascal),
-        ENTRY(PASCAL_A,  PASCAL,      PASCAL,      1, 1, 32768, Pascal),
-        ENTRY(MAXWELL_B, MAXWELL,     MAXWELL,     1, 1, 16384, Maxwell),
-        ENTRY(MAXWELL_A, MAXWELL,     MAXWELL,     1, 1, 16384, Maxwell),
+        ENTRY(BLACKWELL_B, GB20X,     GB20X,     32768, Hopper),
+        ENTRY(BLACKWELL_A, BLACKWELL, BLACKWELL, 32768, Hopper),
+        ENTRY(HOPPER_A,    HOPPER,    HOPPER,    32768, Hopper),
+        ENTRY(ADA_A,       AMPERE,    ADA,       32768, Ampere),
+        ENTRY(AMPERE_B,    AMPERE,    AMPERE,    32768, Ampere),
+        ENTRY(AMPERE_A,    AMPERE,    AMPERE,    32768, Ampere),
+        ENTRY(TURING_A,    TURING,    TURING,    32768, Turing),
     };
 
     int i;
