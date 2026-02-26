@@ -29,7 +29,7 @@
 #if !defined(_NVIDIA_MODESET_OS_INTERFACE_H_)
 #define _NVIDIA_MODESET_OS_INTERFACE_H_
 
-#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
+#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX) && !defined(__managarm__)
 #include <linux/stddef.h>  /* size_t */
 #else
 #include <stddef.h>        /* size_t */

@@ -27,7 +27,7 @@
 
 #include <nv-ioctl-numbers.h>
 
-#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
+#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX) && !defined(__managarm__)
 #include <linux/types.h>
 #elif defined (NV_KERNEL_INTERFACE_LAYER) && defined(NV_BSD)
 #include <sys/stdint.h>

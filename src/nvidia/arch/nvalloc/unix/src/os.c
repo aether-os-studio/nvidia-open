@@ -4711,10 +4711,10 @@ osRmCapRegisterSys
     OS_RM_CAPS *pOsRmCaps;
 
     if (nvidia_caps_root == NULL)
-        return NV_ERR_NOT_SUPPORTED;
+        return NV_OK;
 
     status = _allocOsRmCaps(&pOsRmCaps, OS_RM_CAP_SYS_COUNT);
-    if (status != NV_OK)
+    if (status != NV_ERR_NOT_SUPPORTED)
         return status;
 
     *ppOsRmCaps = pOsRmCaps;

@@ -69,6 +69,10 @@
 #   define NV_LINUX
 #endif  /* defined(__linux__) */
 
+#if defined(__managarm__) && !defined(NV_LINUX)
+#   define NV_LINUX
+#endif  /* defined(__managarm__) */
+
 #if defined(__VMWARE__) && !defined(NV_VMWARE)
 #   define NV_VMWARE
 #endif /* defined(__VMWARE__) */

@@ -25,7 +25,7 @@
 #define __NV_KMS_H__
 
 #include "nvtypes.h"
-#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
+#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX) && !defined(__managarm__)
 #include <linux/stddef.h> /* size_t */
 #else
 #include <stddef.h>       /* size_t */

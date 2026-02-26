@@ -29,8 +29,10 @@
 
 NvU32 osNv_rdcr4(void)
 {
-    NvU64 val;
+    NvU64 val = 0;
+#if !defined(__managarm__)
     asm volatile ("movq %%cr4,%0" : "=r" (val));
+#endif
     return (NvU32)val;
 }
 

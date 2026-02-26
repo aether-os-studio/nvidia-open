@@ -43,6 +43,9 @@
 #include <nv-firmware.h>
 #include <nv-ioctl.h>
 #include <nv-ioctl-numa.h>
+#ifdef __cplusplus
+#include <nv_uvm_types.h>
+#endif
 #include <nvmisc.h>
 #include <os/nv_memory_area.h>
 
